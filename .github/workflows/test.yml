@@ -1,0 +1,113 @@
+name: Test installers
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    name: Windows
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Parse install.ps1 on Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path .\install.ps1), [ref]$tokens, [ref]$errors) | Out-Null
+          if ($errors.Count -gt 0) {
+            $errors | Format-List | Out-String | Write-Error
+            exit 1
+          }
+
+      - name: Self-test install.ps1 on Windows PowerShell 5.1
+        shell: powershell
+        run: .\install.ps1 -SelfTest
+
+      - name: Parse install.ps1 on PowerShell 7
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path .\install.ps1), [ref]$tokens, [ref]$errors) | Out-Null
+          if ($errors.Count -gt 0) {
+            $errors | Format-List | Out-String | Write-Error
+            exit 1
+          }
+
+      - name: Self-test install.ps1 on PowerShell 7
+        shell: pwsh
+        run: .\install.ps1 -SelfTest
+
+      - name: Validate fallback catalog
+        shell: powershell
+        run: |
+          $catalog = Get-Content .\dgsis-model-catalog.json -Raw | ConvertFrom-Json
+          $matches = @($catalog.models | Where-Object { $_.slug -eq "cx/gpt-5.5" })
+          if ($matches.Count -ne 1) {
+            throw "Fallback catalog does not contain exactly one cx/gpt-5.5 model."
+          }
+
+      - name: Optional real install test
+        shell: powershell
+        env:
+          DGSIS_API_KEY: ${{ secrets.DGSIS_API_KEY }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:DGSIS_API_KEY)) {
+            Write-Host "Secret DGSIS_API_KEY not configured; skipping real install test."
+            exit 0
+          }
+          .\install.ps1 -Token $env:DGSIS_API_KEY
+
+  unix:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check install.sh syntax
+        shell: bash
+        run: bash -n install.sh
+
+      - name: Validate fallback catalog
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json
+          with open("dgsis-model-catalog.json", "r", encoding="utf-8-sig") as fh:
+              data = json.load(fh)
+          matches = [m for m in data.get("models", []) if m.get("slug") == "cx/gpt-5.5"]
+          if len(matches) != 1:
+              raise SystemExit("Fallback catalog does not contain exactly one cx/gpt-5.5 model.")
+          PY
+
+      - name: Self-test install.sh
+        shell: bash
+        run: bash install.sh --self-test
+
+      - name: Optional real install test
+        shell: bash
+        env:
+          DGSIS_API_KEY: ${{ secrets.DGSIS_API_KEY }}
+        run: |
+          if [ -z "${DGSIS_API_KEY:-}" ]; then
+            echo "Secret DGSIS_API_KEY not configured; skipping real install test."
+            exit 0
+          fi
+          bash install.sh --token "$DGSIS_API_KEY"

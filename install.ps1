@@ -1,5 +1,8 @@
 param(
-    [string]$Token = ""
+    [string]$Token = "",
+    [ValidateSet("", "X64", "Arm64")]
+    [string]$ArchitectureOverride = "",
+    [switch]$SelfTest
 )
 
 Set-StrictMode -Version Latest
@@ -10,6 +13,7 @@ $DgsisModel = "cx/gpt-5.5"
 $DgsisProvider = "dgsis"
 $EnvKeyName = "DGSIS_API_KEY"
 $CodexInstallUrl = "https://chatgpt.com/codex/install.ps1"
+$FallbackCatalogUrl = "https://raw.githubusercontent.com/soxvip/codex-dgsis-installer/main/dgsis-model-catalog.json"
 
 function Write-Step {
     param([string]$Message)
@@ -71,6 +75,140 @@ function Set-LinesFileUtf8NoBom {
 
     $encoding = New-Object System.Text.UTF8Encoding($false)
     [System.IO.File]::WriteAllLines($Path, $Lines, $encoding)
+}
+
+function Get-EmbeddedFallbackCatalogJson {
+    return @'
+{
+  "models": [
+    {
+      "slug": "cx/gpt-5.5",
+      "display_name": "DGSIS GPT-5.5",
+      "description": "Modelo GPT-5.5 via gateway DGSIS.",
+      "default_reasoning_level": "medium",
+      "supported_reasoning_levels": [
+        { "effort": "low", "description": "Fast responses with lighter reasoning" },
+        { "effort": "medium", "description": "Balances speed and reasoning depth for everyday tasks" },
+        { "effort": "high", "description": "Greater reasoning depth for complex problems" },
+        { "effort": "xhigh", "description": "Extra high reasoning depth for complex problems" }
+      ],
+      "shell_type": "shell_command",
+      "visibility": "list",
+      "supported_in_api": true,
+      "priority": 0,
+      "additional_speed_tiers": ["fast"],
+      "service_tiers": [
+        { "id": "priority", "name": "Fast", "description": "1.5x speed, increased usage" }
+      ],
+      "availability_nux": null,
+      "upgrade": null,
+      "base_instructions": "You are Codex, a coding agent based on GPT-5. You help the user with software development tasks, inspect code carefully, make scoped changes, and verify your work.",
+      "supports_reasoning_summaries": true,
+      "default_reasoning_summary": "none",
+      "support_verbosity": true,
+      "default_verbosity": "low",
+      "apply_patch_tool_type": "freeform",
+      "web_search_tool_type": "text_and_image",
+      "truncation_policy": { "mode": "tokens", "limit": 10000 },
+      "supports_parallel_tool_calls": true,
+      "supports_image_detail_original": true,
+      "context_window": 272000,
+      "max_context_window": 272000,
+      "effective_context_window_percent": 95,
+      "experimental_supported_tools": [],
+      "input_modalities": ["text", "image"],
+      "supports_search_tool": true
+    }
+  ]
+}
+'@
+}
+
+function Get-FallbackCatalogJson {
+    $localCatalogPath = Join-Path (Get-Location) "dgsis-model-catalog.json"
+    if (Test-Path -LiteralPath $localCatalogPath) {
+        return Get-Content -LiteralPath $localCatalogPath -Raw
+    }
+
+    try {
+        $response = Invoke-WebRequest -Uri $FallbackCatalogUrl -UseBasicParsing -TimeoutSec 30
+        $content = $response.Content
+        if ($content -is [byte[]]) {
+            $content = [System.Text.Encoding]::UTF8.GetString($content)
+        }
+        if (-not [string]::IsNullOrWhiteSpace($content)) {
+            return [string]$content
+        }
+    }
+    catch {
+    }
+
+    return Get-EmbeddedFallbackCatalogJson
+}
+
+function Get-WindowsCodexArchitecture {
+    param([string]$Override = "")
+
+    if (-not [string]::IsNullOrWhiteSpace($Override)) {
+        return $Override
+    }
+
+    $processorArchitecture = $null
+    try {
+        $processor = Get-CimInstance -ClassName Win32_Processor -ErrorAction Stop | Select-Object -First 1
+        if ($null -ne $processor) {
+            $processorArchitecture = [int]$processor.Architecture
+        }
+    }
+    catch {
+    }
+
+    if ($null -eq $processorArchitecture) {
+        try {
+            $wmicOutput = & wmic cpu get Architecture /value 2>$null
+            $architectureLine = @($wmicOutput | Where-Object { $_ -match '^Architecture=' } | Select-Object -First 1)
+            if ($architectureLine.Count -gt 0) {
+                $processorArchitecture = [int](($architectureLine[0] -split '=', 2)[1])
+            }
+        }
+        catch {
+        }
+    }
+
+    switch ($processorArchitecture) {
+        9 { return "X64" }
+        12 { return "Arm64" }
+    }
+
+    $envArchitectures = @(
+        [Environment]::GetEnvironmentVariable("PROCESSOR_ARCHITECTURE"),
+        [Environment]::GetEnvironmentVariable("PROCESSOR_ARCHITEW6432")
+    ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+
+    if (@($envArchitectures | Where-Object { $_ -match 'ARM64|AARCH64' }).Count -gt 0) {
+        return "Arm64"
+    }
+    if (@($envArchitectures | Where-Object { $_ -match 'AMD64|X64' }).Count -gt 0) {
+        return "X64"
+    }
+
+    try {
+        $runtimeArchitecture = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()
+        if ($runtimeArchitecture -match 'Arm64') {
+            return "Arm64"
+        }
+        if ($runtimeArchitecture -match 'X64') {
+            return "X64"
+        }
+    }
+    catch {
+    }
+
+    if ([Environment]::Is64BitOperatingSystem) {
+        return "X64"
+    }
+
+    Fail "Arquitetura Windows nao suportada. O Codex CLI requer Windows 64-bit x64 ou ARM64."
 }
 
 function Quote-ProcessArgument {
@@ -263,6 +401,69 @@ function Invoke-CodexExecTest {
     }
 }
 
+function Invoke-InstallerSelfTest {
+    Write-Step "Executando autotestes do instalador Windows"
+
+    if ((Get-WindowsCodexArchitecture -Override "X64") -ne "X64") {
+        Fail "Autoteste falhou: override X64 nao retornou X64."
+    }
+    if ((Get-WindowsCodexArchitecture -Override "Arm64") -ne "Arm64") {
+        Fail "Autoteste falhou: override Arm64 nao retornou Arm64."
+    }
+
+    $sampleLines = @(
+        'model = "gpt-5.5"',
+        'personality = "friendly"',
+        '',
+        '[windows]',
+        'sandbox = "workspace-write"',
+        '',
+        '[model_providers.dgsis]',
+        'name = "old"',
+        '',
+        '[plugins."cloudflare@openai-curated"]',
+        'enabled = true'
+    )
+
+    $sampleLines = Set-TopLevelKey $sampleLines "model" 'model = "cx/gpt-5.5"'
+    $sampleLines = Set-TopLevelKey $sampleLines "model_provider" 'model_provider = "dgsis"'
+    $sampleLines = Remove-Section $sampleLines "model_providers.dgsis"
+    $sampleLines = Remove-Section $sampleLines 'plugins."cloudflare@openai-curated"'
+    $sampleLines = Set-SectionKey $sampleLines "windows" "sandbox" 'sandbox = "elevated"'
+    $sampleLines = @($sampleLines + "" + "[model_providers.dgsis]" + 'name = "DGSIS Gateway"' + "" + '[plugins."cloudflare@openai-curated"]' + 'enabled = false')
+    $sampleText = $sampleLines -join "`n"
+
+    foreach ($pattern in @('(?m)^model = "cx/gpt-5\.5"$', '(?m)^model_provider = "dgsis"$', '(?m)^\[model_providers\.dgsis\]$', '(?m)^\[plugins\."cloudflare@openai-curated"\]$')) {
+        if (@([regex]::Matches($sampleText, $pattern)).Count -ne 1) {
+            Fail "Autoteste falhou: padrao duplicado ou ausente: $pattern"
+        }
+    }
+    if ($sampleText -notmatch '(?m)^sandbox = "elevated"$') {
+        Fail "Autoteste falhou: sandbox elevated nao foi aplicado."
+    }
+
+    $catalog = Get-EmbeddedFallbackCatalogJson | ConvertFrom-Json
+    if (@($catalog.models | Where-Object { $_.slug -eq "cx/gpt-5.5" }).Count -ne 1) {
+        Fail "Autoteste falhou: catalogo fallback invalido."
+    }
+
+    $tempFile = Join-Path ([System.IO.Path]::GetTempPath()) ("codex-dgsis-selftest-{0}.json" -f ([Guid]::NewGuid().ToString("N")))
+    try {
+        Set-TextFileUtf8NoBom -Path $tempFile -Content (Get-EmbeddedFallbackCatalogJson)
+        $bytes = [System.IO.File]::ReadAllBytes($tempFile)
+        if ($bytes.Length -ge 3 -and $bytes[0] -eq 239 -and $bytes[1] -eq 187 -and $bytes[2] -eq 191) {
+            Fail "Autoteste falhou: arquivo UTF-8 foi gravado com BOM."
+        }
+    }
+    finally {
+        if (Test-Path -LiteralPath $tempFile) {
+            Remove-Item -LiteralPath $tempFile -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    Write-Ok "Autotestes Windows passaram"
+}
+
 $isWindowsRuntime = $env:OS -eq "Windows_NT"
 $isWindowsVariable = Get-Variable -Name IsWindows -Scope Global -ErrorAction SilentlyContinue
 if ($null -ne $isWindowsVariable) {
@@ -273,9 +474,17 @@ if (-not $isWindowsRuntime) {
     Fail "Este instalador e somente para Windows PowerShell/PowerShell no Windows."
 }
 
+if ($SelfTest) {
+    Invoke-InstallerSelfTest
+    exit 0
+}
+
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
 Write-Step "Instalando ou atualizando o Codex CLI standalone"
+$codexArchitecture = Get-WindowsCodexArchitecture -Override $ArchitectureOverride
+Write-Ok "Arquitetura detectada para Codex: Windows $codexArchitecture"
+
 $oldNonInteractive = $env:CODEX_NON_INTERACTIVE
 $patchedInstallerPath = $null
 try {
@@ -286,8 +495,12 @@ try {
         $installerContent = [System.Text.Encoding]::UTF8.GetString($installerContent)
     }
 
-    $compatibleArchitectureLine = '$architecture = if ([Environment]::GetEnvironmentVariable("PROCESSOR_ARCHITECTURE") -eq "ARM64" -or [Environment]::GetEnvironmentVariable("PROCESSOR_ARCHITEW6432") -eq "ARM64") { "Arm64" } else { "X64" }'
-    $installerContent = $installerContent.Replace('$architecture = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture', $compatibleArchitectureLine)
+    $compatibleArchitectureLine = '$architecture = "' + $codexArchitecture + '"'
+    $architectureAssignmentPattern = '(?m)^\s*\$architecture\s*=\s*\[System\.Runtime\.InteropServices\.RuntimeInformation\]::OSArchitecture\s*$'
+    if ($installerContent -notmatch $architectureAssignmentPattern) {
+        Fail "Nao consegui preparar o instalador oficial para Windows $codexArchitecture. O formato do instalador oficial mudou."
+    }
+    $installerContent = [regex]::Replace($installerContent, $architectureAssignmentPattern, $compatibleArchitectureLine)
 
     $patchedInstallerPath = Join-Path ([System.IO.Path]::GetTempPath()) ("codex-install-patched-{0}.ps1" -f ([Guid]::NewGuid().ToString("N")))
     Set-TextFileUtf8NoBom -Path $patchedInstallerPath -Content $installerContent
@@ -384,26 +597,39 @@ New-Item -ItemType Directory -Force -Path $catalogDir | Out-Null
 New-Item -ItemType Directory -Force -Path $backupDir | Out-Null
 
 Write-Step "Gerando catalogo local DGSIS para o seletor de modelos"
+$catalogJson = $null
 try {
     $bundledJson = & $preferredCodexExe debug models --bundled
     $bundledCatalog = $bundledJson | ConvertFrom-Json
     $model = @($bundledCatalog.models | Where-Object { $_.slug -eq "gpt-5.5" })[0]
+
+    if ($null -eq $model) {
+        throw "O catalogo embutido do Codex nao contem gpt-5.5."
+    }
+
+    $model.slug = $DgsisModel
+    $model.display_name = "DGSIS GPT-5.5"
+    $model.description = "Modelo GPT-5.5 via gateway DGSIS."
+    $model.availability_nux = $null
+
+    $catalog = [pscustomobject]@{ models = @($model) }
+    $catalogJson = $catalog | ConvertTo-Json -Depth 100
 }
 catch {
-    Fail "Nao foi possivel ler o catalogo embutido do Codex CLI."
+    Write-Host "Aviso: nao foi possivel transformar o catalogo embutido; usando fallback DGSIS." -ForegroundColor Yellow
+    $catalogJson = Get-FallbackCatalogJson
 }
 
-if ($null -eq $model) {
-    Fail "O catalogo embutido do Codex nao contem gpt-5.5."
+if ([string]::IsNullOrWhiteSpace($catalogJson)) {
+    Fail "Nao foi possivel gerar nem carregar o catalogo DGSIS."
 }
 
-$model.slug = $DgsisModel
-$model.display_name = "DGSIS GPT-5.5"
-$model.description = "Modelo GPT-5.5 via gateway DGSIS."
-$model.availability_nux = $null
+$catalogCheck = $catalogJson | ConvertFrom-Json
+if (@($catalogCheck.models | Where-Object { $_.slug -eq $DgsisModel }).Count -ne 1) {
+    Fail "Catalogo DGSIS invalido: modelo $DgsisModel ausente."
+}
 
-$catalog = [pscustomobject]@{ models = @($model) }
-Set-TextFileUtf8NoBom -Path $catalogPath -Content ($catalog | ConvertTo-Json -Depth 100)
+Set-TextFileUtf8NoBom -Path $catalogPath -Content $catalogJson
 Write-Ok "Catalogo criado em $catalogPath"
 
 Write-Step "Mesclando configuracao do Codex"
