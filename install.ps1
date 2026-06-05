@@ -277,15 +277,27 @@ if (-not $isWindowsRuntime) {
 
 Write-Step "Instalando ou atualizando o Codex CLI standalone"
 $oldNonInteractive = $env:CODEX_NON_INTERACTIVE
+$patchedInstallerPath = $null
 try {
     $env:CODEX_NON_INTERACTIVE = "1"
-    if (-not $PSVersionTable.ContainsKey("OSArchitecture")) {
-        $PSVersionTable["OSArchitecture"] = if ([Environment]::Is64BitOperatingSystem) { "X64" } else { "X86" }
+    $installerResponse = Invoke-WebRequest -Uri $CodexInstallUrl -UseBasicParsing -TimeoutSec 120
+    $installerContent = $installerResponse.Content
+    if ($installerContent -is [byte[]]) {
+        $installerContent = [System.Text.Encoding]::UTF8.GetString($installerContent)
     }
-    Invoke-RestMethod -Uri $CodexInstallUrl -TimeoutSec 120 | Invoke-Expression
+
+    $compatibleArchitectureLine = '$architecture = if ([Environment]::GetEnvironmentVariable("PROCESSOR_ARCHITECTURE") -eq "ARM64" -or [Environment]::GetEnvironmentVariable("PROCESSOR_ARCHITEW6432") -eq "ARM64") { "Arm64" } else { "X64" }'
+    $installerContent = $installerContent.Replace('$architecture = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture', $compatibleArchitectureLine)
+
+    $patchedInstallerPath = Join-Path ([System.IO.Path]::GetTempPath()) ("codex-install-patched-{0}.ps1" -f ([Guid]::NewGuid().ToString("N")))
+    Set-TextFileUtf8NoBom -Path $patchedInstallerPath -Content $installerContent
+    & $patchedInstallerPath
 }
 finally {
     $env:CODEX_NON_INTERACTIVE = $oldNonInteractive
+    if ($patchedInstallerPath -and (Test-Path -LiteralPath $patchedInstallerPath)) {
+        Remove-Item -LiteralPath $patchedInstallerPath -Force -ErrorAction SilentlyContinue
+    }
 }
 
 $preferredBinDir = Join-Path $env:LOCALAPPDATA "Programs\OpenAI\Codex\bin"
