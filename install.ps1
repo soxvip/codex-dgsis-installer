@@ -57,6 +57,48 @@ function ConvertTo-TomlString {
     return '"' + $escaped + '"'
 }
 
+function Get-NormalizedPathEntry {
+    param([string]$Entry)
+
+    if ([string]::IsNullOrWhiteSpace($Entry)) {
+        return ""
+    }
+
+    try {
+        return [System.IO.Path]::GetFullPath([Environment]::ExpandEnvironmentVariables($Entry)).TrimEnd("\")
+    }
+    catch {
+        return $Entry.TrimEnd("\")
+    }
+}
+
+function Prepend-PathEntry {
+    param(
+        [string]$PathValue,
+        [string]$Entry
+    )
+
+    $normalizedEntry = Get-NormalizedPathEntry -Entry $Entry
+    $parts = New-Object System.Collections.Generic.List[string]
+    [void]$parts.Add($Entry)
+
+    if (-not [string]::IsNullOrWhiteSpace($PathValue)) {
+        foreach ($part in ($PathValue -split ";")) {
+            if ([string]::IsNullOrWhiteSpace($part)) {
+                continue
+            }
+
+            if ((Get-NormalizedPathEntry -Entry $part) -ieq $normalizedEntry) {
+                continue
+            }
+
+            [void]$parts.Add($part)
+        }
+    }
+
+    return ($parts.ToArray() -join ";")
+}
+
 function Set-TextFileUtf8NoBom {
     param(
         [string]$Path,
@@ -317,6 +359,83 @@ function Invoke-CodexOfficialInstaller {
     }
 }
 
+function Get-FirstExistingFile {
+    param([string[]]$Paths)
+
+    foreach ($path in @($Paths)) {
+        if (-not [string]::IsNullOrWhiteSpace($path) -and (Test-Path -LiteralPath $path -PathType Leaf)) {
+            return $path
+        }
+    }
+
+    return $null
+}
+
+function Sync-CodexWindowsHelperFiles {
+    param(
+        [string]$PreferredBinDir,
+        [string]$StandaloneCurrentDir = ""
+    )
+
+    if ([string]::IsNullOrWhiteSpace($StandaloneCurrentDir)) {
+        $StandaloneCurrentDir = Join-Path $env:USERPROFILE ".codex\packages\standalone\current"
+    }
+
+    New-Item -ItemType Directory -Force -Path $PreferredBinDir | Out-Null
+
+    $resourceDir = Join-Path $StandaloneCurrentDir "codex-resources"
+    $pathDir = Join-Path $StandaloneCurrentDir "codex-path"
+    $appRuntimeBin = Join-Path $env:LOCALAPPDATA "OpenAI\Codex\bin"
+
+    $helpers = @(
+        [pscustomobject]@{
+            Name = "codex-windows-sandbox-setup.exe"
+            Sources = @(
+                (Join-Path $resourceDir "codex-windows-sandbox-setup.exe"),
+                (Join-Path $appRuntimeBin "codex-windows-sandbox-setup.exe")
+            )
+            Required = $true
+        },
+        [pscustomobject]@{
+            Name = "codex-command-runner.exe"
+            Sources = @(
+                (Join-Path $resourceDir "codex-command-runner.exe"),
+                (Join-Path $appRuntimeBin "codex-command-runner.exe")
+            )
+            Required = $false
+        },
+        [pscustomobject]@{
+            Name = "rg.exe"
+            Sources = @(
+                (Join-Path $pathDir "rg.exe"),
+                (Join-Path $appRuntimeBin "rg.exe")
+            )
+            Required = $false
+        }
+    )
+
+    foreach ($helper in $helpers) {
+        $destination = Join-Path $PreferredBinDir $helper.Name
+        if (Test-Path -LiteralPath $destination -PathType Leaf) {
+            continue
+        }
+
+        $source = Get-FirstExistingFile -Paths ([string[]]$helper.Sources)
+        if ([string]::IsNullOrWhiteSpace($source)) {
+            if ($helper.Required) {
+                Fail "O Codex CLI foi instalado, mas nao encontrei $($helper.Name). Rode o instalador novamente ou verifique se o antivirus bloqueou o arquivo."
+            }
+            continue
+        }
+
+        Copy-Item -LiteralPath $source -Destination $destination -Force
+    }
+
+    if (-not (Test-Path -LiteralPath (Join-Path $PreferredBinDir "codex-windows-sandbox-setup.exe") -PathType Leaf)) {
+        Fail "O auxiliar de sandbox do Windows nao ficou disponivel em $PreferredBinDir."
+    }
+}
+
 function Quote-ProcessArgument {
     param([string]$Value)
 
@@ -529,6 +648,24 @@ function Invoke-InstallerSelfTest {
         Fail "Autoteste falhou: erro de rede foi reconhecido como erro de arquitetura."
     }
 
+    $helperTemp = Join-Path ([System.IO.Path]::GetTempPath()) ("codex-dgsis-helper-selftest-{0}" -f ([Guid]::NewGuid().ToString("N")))
+    try {
+        $helperBin = Join-Path $helperTemp "bin"
+        $helperCurrent = Join-Path $helperTemp "current"
+        $helperResources = Join-Path $helperCurrent "codex-resources"
+        New-Item -ItemType Directory -Force -Path $helperBin, $helperResources | Out-Null
+        Set-TextFileUtf8NoBom -Path (Join-Path $helperResources "codex-windows-sandbox-setup.exe") -Content "self-test"
+        Sync-CodexWindowsHelperFiles -PreferredBinDir $helperBin -StandaloneCurrentDir $helperCurrent
+        if (-not (Test-Path -LiteralPath (Join-Path $helperBin "codex-windows-sandbox-setup.exe") -PathType Leaf)) {
+            Fail "Autoteste falhou: auxiliar de sandbox nao foi copiado para bin."
+        }
+    }
+    finally {
+        if (Test-Path -LiteralPath $helperTemp) {
+            Remove-Item -LiteralPath $helperTemp -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
     $sampleLines = @(
         'model = "gpt-5.5"',
         'personality = "friendly"',
@@ -661,19 +798,14 @@ if (-not (Test-Path -LiteralPath $preferredCodexExe)) {
 }
 
 $currentUserPath = [Environment]::GetEnvironmentVariable("Path", "User")
-$pathParts = @()
-if (-not [string]::IsNullOrWhiteSpace($currentUserPath)) {
-    $pathParts = @($currentUserPath -split ";" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
-}
-
-if ($pathParts -notcontains $preferredBinDir) {
-    $newUserPath = (@($preferredBinDir) + $pathParts) -join ";"
+$newUserPath = Prepend-PathEntry -PathValue $currentUserPath -Entry $preferredBinDir
+if ($newUserPath -cne $currentUserPath) {
     [Environment]::SetEnvironmentVariable("Path", $newUserPath, "User")
 }
 
-if (($env:Path -split ";") -notcontains $preferredBinDir) {
-    $env:Path = "$preferredBinDir;$env:Path"
-}
+$env:Path = Prepend-PathEntry -PathValue $env:Path -Entry $preferredBinDir
+
+Sync-CodexWindowsHelperFiles -PreferredBinDir $preferredBinDir
 
 $codexVersion = & $preferredCodexExe --version
 Write-Ok "Codex CLI pronto: $codexVersion"
