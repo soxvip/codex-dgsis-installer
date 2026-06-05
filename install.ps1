@@ -53,6 +53,26 @@ function ConvertTo-TomlString {
     return '"' + $escaped + '"'
 }
 
+function Set-TextFileUtf8NoBom {
+    param(
+        [string]$Path,
+        [string]$Content
+    )
+
+    $encoding = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($Path, $Content, $encoding)
+}
+
+function Set-LinesFileUtf8NoBom {
+    param(
+        [string]$Path,
+        [string[]]$Lines
+    )
+
+    $encoding = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllLines($Path, $Lines, $encoding)
+}
+
 function Quote-ProcessArgument {
     param([string]$Value)
 
@@ -259,6 +279,9 @@ Write-Step "Instalando ou atualizando o Codex CLI standalone"
 $oldNonInteractive = $env:CODEX_NON_INTERACTIVE
 try {
     $env:CODEX_NON_INTERACTIVE = "1"
+    if (-not $PSVersionTable.ContainsKey("OSArchitecture")) {
+        $PSVersionTable["OSArchitecture"] = if ([Environment]::Is64BitOperatingSystem) { "X64" } else { "X86" }
+    }
     Invoke-RestMethod -Uri $CodexInstallUrl -TimeoutSec 120 | Invoke-Expression
 }
 finally {
@@ -368,7 +391,7 @@ $model.description = "Modelo GPT-5.5 via gateway DGSIS."
 $model.availability_nux = $null
 
 $catalog = [pscustomobject]@{ models = @($model) }
-$catalog | ConvertTo-Json -Depth 100 | Set-Content -LiteralPath $catalogPath -Encoding UTF8
+Set-TextFileUtf8NoBom -Path $catalogPath -Content ($catalog | ConvertTo-Json -Depth 100)
 Write-Ok "Catalogo criado em $catalogPath"
 
 Write-Step "Mesclando configuracao do Codex"
@@ -406,7 +429,7 @@ $lines = @($lines + "" + "[model_providers.dgsis]" +
     '[plugins."cloudflare@openai-curated"]' +
     'enabled = false')
 
-$lines | Set-Content -LiteralPath $configPath -Encoding UTF8
+Set-LinesFileUtf8NoBom -Path $configPath -Lines $lines
 Write-Ok "Config.toml atualizado em $configPath"
 
 Write-Step "Validando configuracao do catalogo"
