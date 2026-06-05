@@ -153,6 +153,25 @@ function Get-WindowsCodexArchitecture {
         return $Override
     }
 
+    $machineArchitectureValues = @(
+        [Environment]::GetEnvironmentVariable("PROCESSOR_ARCHITECTURE", "Machine"),
+        [Environment]::GetEnvironmentVariable("PROCESSOR_IDENTIFIER", "Machine")
+    ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+
+    try {
+        $machineEnvironment = Get-ItemProperty -LiteralPath "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment" -ErrorAction Stop
+        $machineArchitectureValues += @(
+            $machineEnvironment.PROCESSOR_ARCHITECTURE,
+            $machineEnvironment.PROCESSOR_IDENTIFIER
+        ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+    }
+    catch {
+    }
+
+    if (@($machineArchitectureValues | Where-Object { $_ -match 'ARM64|AARCH64' }).Count -gt 0) {
+        return "Arm64"
+    }
+
     $processorArchitecture = $null
     try {
         $processor = Get-CimInstance -ClassName Win32_Processor -ErrorAction Stop | Select-Object -First 1
@@ -209,6 +228,93 @@ function Get-WindowsCodexArchitecture {
     }
 
     Fail "Arquitetura Windows nao suportada. O Codex CLI requer Windows 64-bit x64 ou ARM64."
+}
+
+function Get-AlternateCodexArchitecture {
+    param([string]$Architecture)
+
+    if ($Architecture -eq "X64") {
+        return "Arm64"
+    }
+
+    return "X64"
+}
+
+function Test-ArchitectureInstallFailure {
+    param([string]$Message)
+
+    if ([string]::IsNullOrWhiteSpace($Message)) {
+        return $false
+    }
+
+    return $Message -match 'not a valid application for this OS platform|not a valid Win32 application|NativeCommandFailed|Installed Codex command failed verification|This version of .* is not compatible|Bad CPU type'
+}
+
+function Get-CurrentPowerShellPath {
+    try {
+        $processPath = (Get-Process -Id $PID -ErrorAction Stop).Path
+        if (-not [string]::IsNullOrWhiteSpace($processPath) -and (Test-Path -LiteralPath $processPath)) {
+            return $processPath
+        }
+    }
+    catch {
+    }
+
+    $windowsPowerShell = Join-Path $env:WINDIR "System32\WindowsPowerShell\v1.0\powershell.exe"
+    if (Test-Path -LiteralPath $windowsPowerShell) {
+        return $windowsPowerShell
+    }
+
+    return "powershell.exe"
+}
+
+function Get-CodexInstallerContent {
+    $installerResponse = Invoke-WebRequest -Uri $CodexInstallUrl -UseBasicParsing -TimeoutSec 120
+    $installerContent = $installerResponse.Content
+    if ($installerContent -is [byte[]]) {
+        $installerContent = [System.Text.Encoding]::UTF8.GetString($installerContent)
+    }
+
+    return [string]$installerContent
+}
+
+function Invoke-CodexOfficialInstaller {
+    param(
+        [string]$Architecture,
+        [string]$InstallerContent
+    )
+
+    $compatibleArchitectureLine = '$architecture = "' + $Architecture + '"'
+    $architectureAssignmentPattern = '(?m)^\s*\$architecture\s*=\s*\[System\.Runtime\.InteropServices\.RuntimeInformation\]::OSArchitecture\s*$'
+    if ($InstallerContent -notmatch $architectureAssignmentPattern) {
+        Fail "Nao consegui preparar o instalador oficial para Windows $Architecture. O formato do instalador oficial mudou."
+    }
+
+    $patchedInstallerContent = [regex]::Replace($InstallerContent, $architectureAssignmentPattern, $compatibleArchitectureLine)
+    $patchedInstallerPath = Join-Path ([System.IO.Path]::GetTempPath()) ("codex-install-patched-{0}.ps1" -f ([Guid]::NewGuid().ToString("N")))
+
+    try {
+        Set-TextFileUtf8NoBom -Path $patchedInstallerPath -Content $patchedInstallerContent
+        $powerShellPath = Get-CurrentPowerShellPath
+        $installerOutput = & $powerShellPath -NoProfile -ExecutionPolicy Bypass -File $patchedInstallerPath 2>&1
+        $installerExitCode = $LASTEXITCODE
+
+        foreach ($line in $installerOutput) {
+            Write-Host $line
+        }
+
+        $installerOutputText = ($installerOutput | Out-String)
+        if ($installerExitCode -ne 0) {
+            throw "Falha no instalador oficial para Windows $Architecture. $installerOutputText"
+        }
+
+        return $installerOutputText
+    }
+    finally {
+        if (Test-Path -LiteralPath $patchedInstallerPath) {
+            Remove-Item -LiteralPath $patchedInstallerPath -Force -ErrorAction SilentlyContinue
+        }
+    }
 }
 
 function Quote-ProcessArgument {
@@ -410,6 +516,18 @@ function Invoke-InstallerSelfTest {
     if ((Get-WindowsCodexArchitecture -Override "Arm64") -ne "Arm64") {
         Fail "Autoteste falhou: override Arm64 nao retornou Arm64."
     }
+    if ((Get-AlternateCodexArchitecture -Architecture "X64") -ne "Arm64") {
+        Fail "Autoteste falhou: alternativa de X64 deveria ser Arm64."
+    }
+    if ((Get-AlternateCodexArchitecture -Architecture "Arm64") -ne "X64") {
+        Fail "Autoteste falhou: alternativa de Arm64 deveria ser X64."
+    }
+    if (-not (Test-ArchitectureInstallFailure -Message "The specified executable is not a valid application for this OS platform.")) {
+        Fail "Autoteste falhou: erro de plataforma invalida nao foi reconhecido."
+    }
+    if (Test-ArchitectureInstallFailure -Message "Could not resolve latest release version.") {
+        Fail "Autoteste falhou: erro de rede foi reconhecido como erro de arquitetura."
+    }
 
     $sampleLines = @(
         'model = "gpt-5.5"',
@@ -486,31 +604,44 @@ $codexArchitecture = Get-WindowsCodexArchitecture -Override $ArchitectureOverrid
 Write-Ok "Arquitetura detectada para Codex: Windows $codexArchitecture"
 
 $oldNonInteractive = $env:CODEX_NON_INTERACTIVE
-$patchedInstallerPath = $null
+$installerSucceeded = $false
+$lastInstallerError = $null
 try {
     $env:CODEX_NON_INTERACTIVE = "1"
-    $installerResponse = Invoke-WebRequest -Uri $CodexInstallUrl -UseBasicParsing -TimeoutSec 120
-    $installerContent = $installerResponse.Content
-    if ($installerContent -is [byte[]]) {
-        $installerContent = [System.Text.Encoding]::UTF8.GetString($installerContent)
+    $installerContent = Get-CodexInstallerContent
+    $attemptArchitectures = @($codexArchitecture)
+    if ([string]::IsNullOrWhiteSpace($ArchitectureOverride)) {
+        $attemptArchitectures += (Get-AlternateCodexArchitecture -Architecture $codexArchitecture)
     }
 
-    $compatibleArchitectureLine = '$architecture = "' + $codexArchitecture + '"'
-    $architectureAssignmentPattern = '(?m)^\s*\$architecture\s*=\s*\[System\.Runtime\.InteropServices\.RuntimeInformation\]::OSArchitecture\s*$'
-    if ($installerContent -notmatch $architectureAssignmentPattern) {
-        Fail "Nao consegui preparar o instalador oficial para Windows $codexArchitecture. O formato do instalador oficial mudou."
-    }
-    $installerContent = [regex]::Replace($installerContent, $architectureAssignmentPattern, $compatibleArchitectureLine)
+    foreach ($attemptArchitecture in $attemptArchitectures) {
+        try {
+            if ($attemptArchitecture -ne $codexArchitecture) {
+                Write-Step "Tentando arquitetura alternativa: Windows $attemptArchitecture"
+            }
 
-    $patchedInstallerPath = Join-Path ([System.IO.Path]::GetTempPath()) ("codex-install-patched-{0}.ps1" -f ([Guid]::NewGuid().ToString("N")))
-    Set-TextFileUtf8NoBom -Path $patchedInstallerPath -Content $installerContent
-    & $patchedInstallerPath
+            [void](Invoke-CodexOfficialInstaller -Architecture $attemptArchitecture -InstallerContent $installerContent)
+            $codexArchitecture = $attemptArchitecture
+            $installerSucceeded = $true
+            break
+        }
+        catch {
+            $lastInstallerError = $_
+            $lastInstallerMessage = $_.Exception.Message
+            if ($attemptArchitecture -eq $attemptArchitectures[-1] -or -not (Test-ArchitectureInstallFailure -Message $lastInstallerMessage)) {
+                Fail "O instalador oficial do Codex falhou para Windows $attemptArchitecture. $lastInstallerMessage"
+            }
+
+            Write-Host "Aviso: o binario Windows $attemptArchitecture nao executou nesta maquina; tentando a outra arquitetura suportada." -ForegroundColor Yellow
+        }
+    }
 }
 finally {
     $env:CODEX_NON_INTERACTIVE = $oldNonInteractive
-    if ($patchedInstallerPath -and (Test-Path -LiteralPath $patchedInstallerPath)) {
-        Remove-Item -LiteralPath $patchedInstallerPath -Force -ErrorAction SilentlyContinue
-    }
+}
+
+if (-not $installerSucceeded) {
+    Fail "Nao foi possivel instalar o Codex CLI. Ultimo erro: $lastInstallerError"
 }
 
 $preferredBinDir = Join-Path $env:LOCALAPPDATA "Programs\OpenAI\Codex\bin"
