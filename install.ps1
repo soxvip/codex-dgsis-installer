@@ -2,6 +2,9 @@ param(
     [string]$Token = "",
     [ValidateSet("", "X64", "Arm64")]
     [string]$ArchitectureOverride = "",
+    [switch]$SkipDependencies,
+    [switch]$SkipVSCode,
+    [switch]$SkipLiveTests,
     [switch]$SelfTest
 )
 
@@ -14,6 +17,7 @@ $DgsisProvider = "dgsis"
 $EnvKeyName = "DGSIS_API_KEY"
 $CodexInstallUrl = "https://chatgpt.com/codex/install.ps1"
 $FallbackCatalogUrl = "https://raw.githubusercontent.com/soxvip/codex-dgsis-installer/main/dgsis-model-catalog.json"
+$CodexVSCodeExtensionId = "openai.chatgpt"
 
 function Write-Step {
     param([string]$Message)
@@ -97,6 +101,144 @@ function Prepend-PathEntry {
     }
 
     return ($parts.ToArray() -join ";")
+}
+
+function Remove-PathEntriesByRegex {
+    param(
+        [string]$PathValue,
+        [string[]]$Patterns
+    )
+
+    $parts = New-Object System.Collections.Generic.List[string]
+    if ([string]::IsNullOrWhiteSpace($PathValue)) {
+        return ""
+    }
+
+    foreach ($part in ($PathValue -split ";")) {
+        if ([string]::IsNullOrWhiteSpace($part)) {
+            continue
+        }
+
+        $drop = $false
+        foreach ($pattern in $Patterns) {
+            if ($part -match $pattern) {
+                $drop = $true
+                break
+            }
+        }
+
+        if (-not $drop) {
+            [void]$parts.Add($part)
+        }
+    }
+
+    return ($parts.ToArray() -join ";")
+}
+
+function Refresh-ProcessPathFromRegistry {
+    $machinePath = [Environment]::GetEnvironmentVariable("Path", "Machine")
+    $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+    $combined = @($machinePath, $userPath) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+    if ($combined.Count -gt 0) {
+        $env:Path = $combined -join ";"
+    }
+}
+
+function Test-CommandAvailable {
+    param([string]$Name)
+    return $null -ne (Get-Command $Name -ErrorAction SilentlyContinue)
+}
+
+function Install-WingetPackage {
+    param(
+        [string]$Id,
+        [string]$DisplayName,
+        [string[]]$CommandNames = @()
+    )
+
+    foreach ($commandName in @($CommandNames)) {
+        if (Test-CommandAvailable -Name $commandName) {
+            Write-Ok "$DisplayName ja disponivel ($commandName)"
+            return
+        }
+    }
+
+    if (-not (Test-CommandAvailable -Name "winget")) {
+        Fail "winget nao encontrado. Instale o App Installer da Microsoft Store ou instale $DisplayName manualmente."
+    }
+
+    Write-Step "Instalando $DisplayName via winget"
+    $wingetArgs = @(
+        "install",
+        "--id", $Id,
+        "--exact",
+        "--accept-package-agreements",
+        "--accept-source-agreements",
+        "--disable-interactivity"
+    )
+
+    $output = & winget @wingetArgs 2>&1
+    $exitCode = $LASTEXITCODE
+    foreach ($line in $output) {
+        Write-Host $line
+    }
+
+    if ($exitCode -ne 0) {
+        $text = ($output | Out-String)
+        if ($text -notmatch 'already installed|No available upgrade|Ja.*instalado|Nenhuma atualizacao') {
+            Fail "winget falhou ao instalar $DisplayName. Saida: $text"
+        }
+    }
+
+    Refresh-ProcessPathFromRegistry
+    foreach ($commandName in @($CommandNames)) {
+        if (Test-CommandAvailable -Name $commandName) {
+            Write-Ok "$DisplayName pronto ($commandName)"
+            return
+        }
+    }
+
+    Write-Host "Aviso: $DisplayName foi instalado, mas o comando ainda nao apareceu nesta sessao. Uma nova janela do PowerShell deve resolver." -ForegroundColor Yellow
+}
+
+function Install-ClientDependencies {
+    if ($SkipDependencies) {
+        Write-Host "Pulando instalacao de dependencias por -SkipDependencies." -ForegroundColor Yellow
+        return
+    }
+
+    Install-WingetPackage -Id "Git.Git" -DisplayName "Git" -CommandNames @("git")
+    Install-WingetPackage -Id "OpenJS.NodeJS.LTS" -DisplayName "Node.js LTS" -CommandNames @("node", "npm")
+    Install-WingetPackage -Id "Python.Python.3.14" -DisplayName "Python" -CommandNames @("python", "py")
+
+    if (-not $SkipVSCode) {
+        Install-WingetPackage -Id "Microsoft.VisualStudioCode" -DisplayName "Visual Studio Code" -CommandNames @("code")
+    }
+}
+
+function Install-CodexVSCodeExtension {
+    if ($SkipVSCode) {
+        Write-Host "Pulando VS Code por -SkipVSCode." -ForegroundColor Yellow
+        return
+    }
+
+    if (-not (Test-CommandAvailable -Name "code")) {
+        Write-Host "Aviso: comando code nao encontrado. VS Code pode precisar ser aberto uma vez ou PATH atualizado." -ForegroundColor Yellow
+        return
+    }
+
+    Write-Step "Instalando extensao Codex/ChatGPT no VS Code"
+    $output = & code --install-extension $CodexVSCodeExtensionId --force 2>&1
+    $exitCode = $LASTEXITCODE
+    foreach ($line in $output) {
+        Write-Host $line
+    }
+
+    if ($exitCode -ne 0) {
+        Fail "Falha ao instalar extensao VS Code $CodexVSCodeExtensionId."
+    }
+
+    Write-Ok "Extensao VS Code pronta: $CodexVSCodeExtensionId"
 }
 
 function Set-TextFileUtf8NoBom {
@@ -436,6 +578,183 @@ function Sync-CodexWindowsHelperFiles {
     }
 }
 
+function Get-PwshShimSource {
+    return @'
+using System;
+using System.Diagnostics;
+using System.Text;
+
+internal static class PwshShim
+{
+    private static int Main(string[] args)
+    {
+        string target = Environment.ExpandEnvironmentVariables(@"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe");
+        var startInfo = new ProcessStartInfo(target)
+        {
+            UseShellExecute = false,
+            Arguments = JoinArguments(args)
+        };
+
+        using (var process = Process.Start(startInfo))
+        {
+            process.WaitForExit();
+            return process.ExitCode;
+        }
+    }
+
+    private static string JoinArguments(string[] args)
+    {
+        var builder = new StringBuilder();
+        for (int i = 0; i < args.Length; i++)
+        {
+            if (i > 0) builder.Append(' ');
+            builder.Append(QuoteArgument(args[i]));
+        }
+        return builder.ToString();
+    }
+
+    private static string QuoteArgument(string value)
+    {
+        if (value.Length == 0) return "\"\"";
+        bool needsQuotes = value.IndexOfAny(new[] { ' ', '\t', '\n', '\v', '"' }) >= 0;
+        if (!needsQuotes) return value;
+
+        var builder = new StringBuilder();
+        builder.Append('"');
+        int backslashes = 0;
+        foreach (char c in value)
+        {
+            if (c == '\\')
+            {
+                backslashes++;
+                continue;
+            }
+            if (c == '"')
+            {
+                builder.Append('\\', backslashes * 2 + 1);
+                builder.Append('"');
+                backslashes = 0;
+                continue;
+            }
+            builder.Append('\\', backslashes);
+            backslashes = 0;
+            builder.Append(c);
+        }
+        builder.Append('\\', backslashes * 2);
+        builder.Append('"');
+        return builder.ToString();
+    }
+}
+'@
+}
+
+function Get-CSharpCompilerPath {
+    $candidates = @(
+        (Join-Path $env:WINDIR "Microsoft.NET\Framework64\v4.0.30319\csc.exe"),
+        (Join-Path $env:WINDIR "Microsoft.NET\Framework\v4.0.30319\csc.exe")
+    )
+
+    foreach ($candidate in $candidates) {
+        if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+            return $candidate
+        }
+    }
+
+    $command = Get-Command csc.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($null -ne $command) {
+        return $command.Source
+    }
+
+    return $null
+}
+
+function Install-PwshShim {
+    param([string]$PreferredBinDir)
+
+    $shimPath = Join-Path $PreferredBinDir "pwsh.exe"
+    $tempDir = Join-Path ([System.IO.Path]::GetTempPath()) ("codex-pwsh-shim-{0}" -f ([Guid]::NewGuid().ToString("N")))
+    $sourcePath = Join-Path $tempDir "PwshShim.cs"
+    $compiler = Get-CSharpCompilerPath
+
+    if ([string]::IsNullOrWhiteSpace($compiler)) {
+        Write-Host "Aviso: csc.exe nao encontrado; nao foi possivel gerar shim pwsh.exe. Se o cliente usa PowerShell da Microsoft Store, instale .NET Framework Developer Pack ou remova o alias pwsh da Store." -ForegroundColor Yellow
+        return
+    }
+
+    try {
+        New-Item -ItemType Directory -Force -Path $tempDir | Out-Null
+        Set-TextFileUtf8NoBom -Path $sourcePath -Content (Get-PwshShimSource)
+        $compileOutput = & $compiler /nologo /target:exe /platform:anycpu /optimize+ /out:$shimPath $sourcePath 2>&1
+        $exitCode = $LASTEXITCODE
+        if ($exitCode -ne 0 -or -not (Test-Path -LiteralPath $shimPath -PathType Leaf)) {
+            Fail "Falha ao compilar shim pwsh.exe. Saida: $($compileOutput | Out-String)"
+        }
+
+        $testOutput = & $shimPath -NoProfile -Command "Write-Output CODEX_PWSH_SHIM_OK" 2>&1
+        if ($LASTEXITCODE -ne 0 -or (($testOutput | Out-String) -notmatch "CODEX_PWSH_SHIM_OK")) {
+            Fail "Shim pwsh.exe foi criado, mas nao executou corretamente. Saida: $($testOutput | Out-String)"
+        }
+
+        Write-Ok "Shim pwsh.exe pronto em $shimPath"
+    }
+    finally {
+        if (Test-Path -LiteralPath $tempDir) {
+            Remove-Item -LiteralPath $tempDir -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
+function Set-CodexPowerShellProfilePathFix {
+    param([string]$PreferredBinDir)
+
+    $profileCodexBin = $PreferredBinDir.Replace("'", "''")
+    $profileBlock = @"
+# BEGIN CODEX_DGSIS_PATH_FIX
+`$codexBin = '$profileCodexBin'
+`$pathParts = `$env:PATH -split ';' | Where-Object {
+    `$_ -and
+    (`$_ -notmatch '^C:\\Program Files\\WindowsApps\\Microsoft\.PowerShell_') -and
+    (`$_ -ne `$codexBin)
+}
+if (Test-Path -LiteralPath `$codexBin) {
+    `$env:PATH = (@(`$codexBin) + `$pathParts) -join ';'
+} else {
+    `$env:PATH = `$pathParts -join ';'
+}
+# END CODEX_DGSIS_PATH_FIX
+"@
+
+    $profilePaths = @(
+        (Join-Path $env:USERPROFILE "Documents\PowerShell\profile.ps1"),
+        (Join-Path $env:USERPROFILE "Documents\WindowsPowerShell\profile.ps1")
+    )
+
+    foreach ($profilePath in $profilePaths) {
+        $profileDir = Split-Path -Parent $profilePath
+        New-Item -ItemType Directory -Force -Path $profileDir | Out-Null
+
+        $existing = ""
+        if (Test-Path -LiteralPath $profilePath -PathType Leaf) {
+            $existing = Get-Content -LiteralPath $profilePath -Raw
+        }
+
+        $clean = [regex]::Replace($existing, '(?s)\r?\n?# BEGIN CODEX_DGSIS_PATH_FIX.*?# END CODEX_DGSIS_PATH_FIX\r?\n?', "`r`n")
+        $newContent = ($clean.TrimEnd() + "`r`n`r`n" + $profileBlock + "`r`n").TrimStart()
+        Set-TextFileUtf8NoBom -Path $profilePath -Content $newContent
+    }
+
+    $env:Path = Prepend-PathEntry -PathValue (Remove-PathEntriesByRegex -PathValue $env:Path -Patterns @('^C:\\Program Files\\WindowsApps\\Microsoft\.PowerShell_')) -Entry $PreferredBinDir
+    Write-Ok "Perfis PowerShell ajustados para priorizar Codex\\bin"
+}
+
+function Get-StableCodexPathValue {
+    param([string]$PreferredBinDir)
+
+    Refresh-ProcessPathFromRegistry
+    $cleanPath = Remove-PathEntriesByRegex -PathValue $env:Path -Patterns @('^C:\\Program Files\\WindowsApps\\Microsoft\.PowerShell_')
+    return Prepend-PathEntry -PathValue $cleanPath -Entry $PreferredBinDir
+}
+
 function Quote-ProcessArgument {
     param([string]$Value)
 
@@ -626,6 +945,109 @@ function Invoke-CodexExecTest {
     }
 }
 
+function Invoke-CodexDoctorCheck {
+    param([string]$CodexExe)
+
+    Write-Step "Executando codex doctor"
+    $doctorOutput = & $CodexExe doctor --json 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        Fail "codex doctor falhou. Saida: $($doctorOutput | Out-String)"
+    }
+
+    try {
+        $doctor = ($doctorOutput | Out-String) | ConvertFrom-Json
+    }
+    catch {
+        Fail "codex doctor nao retornou JSON valido. Saida: $($doctorOutput | Out-String)"
+    }
+
+    $bad = @($doctor.checks.PSObject.Properties | Where-Object { $_.Value.status -ne "ok" })
+    if ($bad.Count -gt 0) {
+        $badText = ($bad | ForEach-Object { "$($_.Name): $($_.Value.status) $($_.Value.summary)" }) -join "; "
+        Fail "codex doctor encontrou problemas: $badText"
+    }
+
+    Write-Ok "codex doctor: todos checks ok"
+}
+
+function Invoke-CodexShellToolTest {
+    param([string]$CodexExe)
+
+    Write-Step "Testando ferramenta shell do Codex"
+    $tag = "CODEX_DGSIS_SHELL_TOOL_OK"
+    $jsonlPath = Join-Path ([System.IO.Path]::GetTempPath()) ("codex-dgsis-shell-{0}.jsonl" -f ([Guid]::NewGuid().ToString("N")))
+    $lastPath = Join-Path ([System.IO.Path]::GetTempPath()) ("codex-dgsis-shell-last-{0}.txt" -f ([Guid]::NewGuid().ToString("N")))
+
+    try {
+        $prompt = "Use uma ferramenta de shell para executar um comando que imprime $tag. Depois responda exatamente $tag e nada mais."
+        & $CodexExe exec --ephemeral --skip-git-repo-check --json -o $lastPath $prompt *> $jsonlPath
+        $exitCode = $LASTEXITCODE
+        $lines = @()
+        if (Test-Path -LiteralPath $jsonlPath) {
+            $lines = @(Get-Content -LiteralPath $jsonlPath)
+        }
+
+        $final = ""
+        if (Test-Path -LiteralPath $lastPath) {
+            $final = (Get-Content -LiteralPath $lastPath -Raw).Trim()
+        }
+
+        $commandOk = $false
+        $failed = $false
+        $lastCommand = ""
+
+        foreach ($line in $lines) {
+            $lineText = [string]$line
+            if ($lineText -match 'CreateProcessAsUserW failed|windows sandbox: runner error') {
+                $failed = $true
+            }
+
+            if ($lineText.TrimStart().StartsWith("{")) {
+                try {
+                    $event = $lineText | ConvertFrom-Json
+                    if ($event.type -eq "item.completed" -and $event.item.type -eq "command_execution") {
+                        $lastCommand = $event.item.command
+                        if ($event.item.status -eq "failed" -or $event.item.exit_code -ne 0) {
+                            $failed = $true
+                        }
+                        if ($event.item.exit_code -eq 0 -and $event.item.aggregated_output -match [regex]::Escape($tag)) {
+                            $commandOk = $true
+                        }
+                    }
+                }
+                catch {
+                }
+            }
+        }
+
+        if ($exitCode -ne 0 -or $final -ne $tag -or -not $commandOk -or $failed) {
+            $sample = ($lines | Where-Object { $_ -match 'command_execution|CreateProcess|windows sandbox|pwsh|powershell|cmd.exe|CODEX_DGSIS_SHELL_TOOL_OK' } | Select-Object -First 20) -join "`n"
+            Fail "Teste shell tool falhou. exit=$exitCode final='$final' commandOk=$commandOk failed=$failed command='$lastCommand' amostra=$sample"
+        }
+
+        Write-Ok "Shell tool executou comando real sem erro de sandbox"
+    }
+    finally {
+        if (Test-Path -LiteralPath $jsonlPath) {
+            Remove-Item -LiteralPath $jsonlPath -Force -ErrorAction SilentlyContinue
+        }
+        if (Test-Path -LiteralPath $lastPath) {
+            Remove-Item -LiteralPath $lastPath -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
+function Test-CodexConfigStrict {
+    param([string]$CodexExe)
+
+    $strictOutput = & $CodexExe --strict-config --version 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        Fail "config.toml contem chave invalida. Saida: $($strictOutput | Out-String)"
+    }
+
+    Write-Ok "config.toml aceito em modo strict"
+}
+
 function Invoke-InstallerSelfTest {
     Write-Step "Executando autotestes do instalador Windows"
 
@@ -646,6 +1068,17 @@ function Invoke-InstallerSelfTest {
     }
     if (Test-ArchitectureInstallFailure -Message "Could not resolve latest release version.") {
         Fail "Autoteste falhou: erro de rede foi reconhecido como erro de arquitetura."
+    }
+
+    $pathSample = "C:\Program Files\WindowsApps\Microsoft.PowerShell_7.6.2.0_x64__8wekyb3d8bbwe;C:\Tools;C:\Users\Cliente\AppData\Local\Microsoft\WindowsApps"
+    $pathClean = Remove-PathEntriesByRegex -PathValue $pathSample -Patterns @('^C:\\Program Files\\WindowsApps\\Microsoft\.PowerShell_')
+    if ($pathClean -match 'Microsoft\.PowerShell_' -or $pathClean -notmatch 'C:\\Tools') {
+        Fail "Autoteste falhou: limpeza de PATH PowerShell Store invalida."
+    }
+
+    $shimSource = Get-PwshShimSource
+    if ($shimSource -notmatch 'WindowsPowerShell\\v1\.0\\powershell\.exe' -or $shimSource -notmatch 'QuoteArgument') {
+        Fail "Autoteste falhou: fonte do shim pwsh.exe invalida."
     }
 
     $helperTemp = Join-Path ([System.IO.Path]::GetTempPath()) ("codex-dgsis-helper-selftest-{0}" -f ([Guid]::NewGuid().ToString("N")))
@@ -697,6 +1130,13 @@ function Invoke-InstallerSelfTest {
         Fail "Autoteste falhou: sandbox elevated nao foi aplicado."
     }
 
+    $sampleLines = Remove-Section $sampleLines "shell_environment_policy"
+    $sampleLines = @($sampleLines + "" + "[shell_environment_policy]" + 'inherit = "all"' + 'set = { PATH = "C:\\Codex\\bin;C:\\Windows\\System32" }')
+    $sampleText = $sampleLines -join "`n"
+    if (@([regex]::Matches($sampleText, '(?m)^\[shell_environment_policy\]$')).Count -ne 1) {
+        Fail "Autoteste falhou: shell_environment_policy duplicado ou ausente."
+    }
+
     $catalog = Get-EmbeddedFallbackCatalogJson | ConvertFrom-Json
     if (@($catalog.models | Where-Object { $_.slug -eq "cx/gpt-5.5" }).Count -ne 1) {
         Fail "Autoteste falhou: catalogo fallback invalido."
@@ -735,6 +1175,8 @@ if ($SelfTest) {
 }
 
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+
+Install-ClientDependencies
 
 Write-Step "Instalando ou atualizando o Codex CLI standalone"
 $codexArchitecture = Get-WindowsCodexArchitecture -Override $ArchitectureOverride
@@ -806,6 +1248,9 @@ if ($newUserPath -cne $currentUserPath) {
 $env:Path = Prepend-PathEntry -PathValue $env:Path -Entry $preferredBinDir
 
 Sync-CodexWindowsHelperFiles -PreferredBinDir $preferredBinDir
+Install-PwshShim -PreferredBinDir $preferredBinDir
+Set-CodexPowerShellProfilePathFix -PreferredBinDir $preferredBinDir
+Install-CodexVSCodeExtension
 
 $codexVersion = & $preferredCodexExe --version
 Write-Ok "Codex CLI pronto: $codexVersion"
@@ -919,9 +1364,17 @@ $lines = Set-TopLevelKey $lines "model" 'model = "cx/gpt-5.5"'
 
 $lines = Remove-Section $lines "model_providers.dgsis"
 $lines = Remove-Section $lines 'plugins."cloudflare@openai-curated"'
+$lines = Remove-Section $lines "shell_environment_policy"
 $lines = Set-SectionKey $lines "windows" "sandbox" 'sandbox = "elevated"'
 
-$lines = @($lines + "" + "[model_providers.dgsis]" +
+$stablePath = Get-StableCodexPathValue -PreferredBinDir $preferredBinDir
+$stablePathToml = ConvertTo-TomlString $stablePath
+
+$lines = @($lines + "" + "[shell_environment_policy]" +
+    'inherit = "all"' +
+    "set = { PATH = $stablePathToml }" +
+    "" +
+    "[model_providers.dgsis]" +
     'name = "DGSIS Gateway"' +
     'base_url = "https://gtw.dgsis.com.br/v1"' +
     'wire_api = "responses"' +
@@ -933,6 +1386,8 @@ $lines = @($lines + "" + "[model_providers.dgsis]" +
 Set-LinesFileUtf8NoBom -Path $configPath -Lines $lines
 Write-Ok "Config.toml atualizado em $configPath"
 
+Test-CodexConfigStrict -CodexExe $preferredCodexExe
+
 Write-Step "Validando configuracao do catalogo"
 $debugModels = & $preferredCodexExe debug models
 if ($LASTEXITCODE -ne 0 -or $debugModels -notmatch '"slug"\s*:\s*"cx/gpt-5\.5"') {
@@ -940,11 +1395,20 @@ if ($LASTEXITCODE -ne 0 -or $debugModels -notmatch '"slug"\s*:\s*"cx/gpt-5\.5"')
 }
 Write-Ok "Catalogo DGSIS carregado pelo Codex"
 
-Write-Step "Executando teste final do Codex CLI com o gateway DGSIS"
-Invoke-CodexExecTest -CodexExe $preferredCodexExe
-Write-Ok "Codex respondeu com model: cx/gpt-5.5"
+Invoke-CodexDoctorCheck -CodexExe $preferredCodexExe
+
+if ($SkipLiveTests) {
+    Write-Host "Pulando testes vivos por -SkipLiveTests." -ForegroundColor Yellow
+}
+else {
+    Write-Step "Executando teste final do Codex CLI com o gateway DGSIS"
+    Invoke-CodexExecTest -CodexExe $preferredCodexExe
+    Write-Ok "Codex respondeu com model: cx/gpt-5.5"
+    Invoke-CodexShellToolTest -CodexExe $preferredCodexExe
+}
 
 Write-Host ""
 Write-Host "Instalacao concluida." -ForegroundColor Green
 Write-Host "Feche e abra uma nova janela do PowerShell e execute: codex"
 Write-Host "No topo do Codex deve aparecer: model: cx/gpt-5.5"
+Write-Host "No VS Code, abra a barra lateral Codex/ChatGPT; o token DGSIS ja esta configurado no ambiente do usuario."

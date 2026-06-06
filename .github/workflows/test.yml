@@ -30,7 +30,11 @@ jobs:
 
       - name: Self-test install.ps1 on Windows PowerShell 5.1
         shell: powershell
-        run: .\install.ps1 -SelfTest
+        run: |
+          1..3 | ForEach-Object {
+            .\install.ps1 -SelfTest
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
 
       - name: Parse install.ps1 on PowerShell 7
         shell: pwsh
@@ -45,7 +49,22 @@ jobs:
 
       - name: Self-test install.ps1 on PowerShell 7
         shell: pwsh
-        run: .\install.ps1 -SelfTest
+        run: |
+          1..3 | ForEach-Object {
+            .\install.ps1 -SelfTest
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+
+      - name: Check Markdown ASCII
+        shell: powershell
+        run: |
+          $files = @('README.md', 'TUTORIAL-CLIENTE.md', 'IA-INSTALACAO-CODEX-DGSIS.md', 'IA-VSCODE-CODEX.md')
+          foreach ($file in $files) {
+            $text = Get-Content $file -Raw
+            if ($text -match '[^\x00-\x7F]') {
+              throw "$file contains non-ASCII characters."
+            }
+          }
 
       - name: Validate fallback catalog
         shell: powershell
