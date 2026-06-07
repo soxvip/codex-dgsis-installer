@@ -58,7 +58,15 @@ jobs:
       - name: Check Markdown ASCII
         shell: powershell
         run: |
-          $files = @('README.md', 'TUTORIAL-CLIENTE.md', 'IA-INSTALACAO-CODEX-DGSIS.md', 'IA-VSCODE-CODEX.md')
+          $files = @(
+            'README.md',
+            'TUTORIAL-CLIENTE.md',
+            'TUTORIAL-CLIENTE-MAC.md',
+            'IA-INSTALACAO-CODEX-DGSIS.md',
+            'IA-INSTALACAO-CODEX-DGSIS-MAC.md',
+            'IA-VSCODE-CODEX.md',
+            'IA-VSCODE-CODEX-MAC.md'
+          )
           foreach ($file in $files) {
             $text = Get-Content $file -Raw
             if ($text -match '[^\x00-\x7F]') {
@@ -116,9 +124,12 @@ jobs:
               raise SystemExit("Fallback catalog does not contain exactly one cx/gpt-5.5 model.")
           PY
 
-      - name: Self-test install.sh
+      - name: Self-test install.sh three times
         shell: bash
-        run: bash install.sh --self-test
+        run: |
+          for i in 1 2 3; do
+            bash install.sh --self-test
+          done
 
       - name: Optional real install test
         shell: bash
