@@ -130,6 +130,29 @@ curl -fsSL https://raw.githubusercontent.com/soxvip/codex-dgsis-installer/main/i
 
 A versao atual pede o token logo no inicio. Se voltar ao prompt sem `Instalacao concluida`, envie ao suporte as linhas que comecam com `ERROR:`.
 
+### `codex: command not found`
+
+Rode:
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+test -x "$HOME/.local/bin/codex" && "$HOME/.local/bin/codex" --version
+```
+
+Se mostrar versao, feche e abra o Terminal. Depois rode:
+
+```bash
+codex --version
+```
+
+Se `~/.local/bin/codex` nao existir, rode o instalador de novo:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/soxvip/codex-dgsis-installer/main/install.sh | bash
+```
+
+A versao atual grava o PATH do Codex em `.zprofile`, `.zshrc`, `.bash_profile`, `.bashrc` e `.profile`.
+
 ### VS Code nao abriu o chat Codex
 
 Feche o VS Code e abra de novo. Se ainda nao aparecer, rode:

@@ -140,11 +140,46 @@ persist_profile_line() {
 }
 
 persist_codex_path() {
-  local profile path_line
+  local profile path_line file
   profile="$(pick_profile)"
   path_line='case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) export PATH="$HOME/.local/bin:$PATH" ;; esac'
   persist_profile_line "$profile" "$path_line"
+
+  case "$(uname -s)" in
+    Darwin)
+      for file in "$HOME/.zprofile" "$HOME/.zshrc" "$HOME/.bash_profile" "$HOME/.bashrc" "$HOME/.profile"; do
+        persist_profile_line "$file" "$path_line"
+      done
+      ;;
+    Linux)
+      for file in "$HOME/.profile" "$HOME/.bashrc" "$HOME/.zshrc"; do
+        persist_profile_line "$file" "$path_line"
+      done
+      ;;
+  esac
+
   export PATH="$HOME/.local/bin:$PATH"
+}
+
+find_codex_command() {
+  local candidate
+  if command -v codex >/dev/null 2>&1; then
+    command -v codex
+    return 0
+  fi
+
+  for candidate in \
+    "${CODEX_INSTALL_DIR:-}/codex" \
+    "$HOME/.local/bin/codex" \
+    "/opt/homebrew/bin/codex" \
+    "/usr/local/bin/codex"; do
+    if [ -n "$candidate" ] && [ -x "$candidate" ]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+
+  return 1
 }
 
 homebrew_shellenv_line() {
@@ -573,22 +608,25 @@ validate_token() {
 }
 
 install_codex_cli() {
-  local installer
+  local installer codex_cmd
   installer="$(mktemp)"
   curl -fsSL "$CODEX_INSTALL_URL" -o "$installer"
   CODEX_NON_INTERACTIVE=1 sh "$installer"
   rm -f "$installer"
 
   persist_codex_path
-  if ! command -v codex >/dev/null 2>&1; then
-    fail "Nao encontrei o comando codex apos a instalacao."
+  codex_cmd="$(find_codex_command || true)"
+  if [ -z "$codex_cmd" ]; then
+    fail "Nao encontrei o comando codex apos a instalacao. Verifique se existe $HOME/.local/bin/codex e rode: export PATH=\"$HOME/.local/bin:\$PATH\""
   fi
-  codex --version >/dev/null
+  "$codex_cmd" --version >/dev/null
 }
 
 generate_catalog() {
   mkdir -p "$CATALOG_DIR"
-  if command -v python3 >/dev/null 2>&1 && python3 --version >/dev/null 2>&1 && codex debug models --bundled >"$CATALOG_PATH.source" 2>/dev/null; then
+  local codex_cmd
+  codex_cmd="$(find_codex_command || true)"
+  if command -v python3 >/dev/null 2>&1 && python3 --version >/dev/null 2>&1 && [ -n "$codex_cmd" ] && "$codex_cmd" debug models --bundled >"$CATALOG_PATH.source" 2>/dev/null; then
     if python3 - "$CATALOG_PATH.source" "$CATALOG_PATH" "$DGSIS_MODEL" <<'PY'
 import json
 import sys
@@ -759,6 +797,8 @@ EOF
 
   profile="$(pick_profile)"
   [ "$(grep -Fc 'dgsis.env' "$profile")" = "1" ] || fail "Autoteste falhou: profile com source duplicado."
+  persist_codex_path
+  [ "$(grep -Fc '.local/bin' "$profile")" -ge "1" ] || fail "Autoteste falhou: PATH do Codex nao foi salvo no profile."
 
   fakebin="$tmp/bin"
   old_path="$PATH"
@@ -822,7 +862,9 @@ ok "Dependencias verificadas"
 
 step "Instalando ou atualizando Codex CLI standalone"
 install_codex_cli
-ok "Codex CLI pronto: $(codex --version)"
+codex_cmd="$(find_codex_command || true)"
+[ -n "$codex_cmd" ] || fail "Codex CLI instalado, mas comando nao foi encontrado."
+ok "Codex CLI pronto: $("$codex_cmd" --version)"
 
 step "Instalando Codex no VS Code"
 install_vscode_extension

@@ -153,6 +153,35 @@ curl -fsSL https://raw.githubusercontent.com/soxvip/codex-dgsis-installer/main/i
 
 Se repetir, envie ao suporte o trecho desde `==>` ate `ERROR:`. Nao envie token.
 
+### `codex: command not found`
+
+Primeiro confira se e so PATH:
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+test -x "$HOME/.local/bin/codex" && "$HOME/.local/bin/codex" --version
+```
+
+Se existir, abra novo Terminal e rode:
+
+```bash
+codex --version
+```
+
+Se `~/.local/bin/codex` nao existir, reinstale pelo instalador principal:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/soxvip/codex-dgsis-installer/main/install.sh | bash
+```
+
+Depois valide:
+
+```bash
+command -v codex
+codex --version
+grep -F '.local/bin' ~/.zprofile ~/.zshrc ~/.bash_profile ~/.bashrc ~/.profile 2>/dev/null
+```
+
 ### Token invalido
 
 Rode o instalador de novo e peca token correto:

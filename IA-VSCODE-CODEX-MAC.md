@@ -47,6 +47,15 @@ grep -nF '[model_providers.dgsis.auth]' ~/.codex/config.toml
 ~/.codex/dgsis-token.sh >/dev/null && echo TOKEN_HELPER_OK
 ```
 
+Se `codex` nao existir:
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+test -x "$HOME/.local/bin/codex" && "$HOME/.local/bin/codex" --version
+```
+
+Se ainda nao existir, rode novamente o instalador principal.
+
 Confirme no `config.toml`:
 
 ```toml
