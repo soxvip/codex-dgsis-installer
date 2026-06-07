@@ -118,6 +118,18 @@ Cole o novo token quando o Terminal pedir. A configuracao anterior recebe backup
 
 Digite a senha local do Mac. O Terminal nao mostra os caracteres enquanto voce digita.
 
+### Apareceu aviso do Python/Homebrew e voltou ao prompt
+
+Mensagens sobre `python`, `pip`, `tkinter`, `dbm.gnu` ou `Homebrew-and-Python` sao avisos normais do Homebrew, nao sao o pedido de token DGSIS.
+
+Rode o comando de instalacao novamente:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/soxvip/codex-dgsis-installer/main/install.sh | bash
+```
+
+A versao atual pede o token logo no inicio. Se voltar ao prompt sem `Instalacao concluida`, envie ao suporte as linhas que comecam com `ERROR:`.
+
 ### VS Code nao abriu o chat Codex
 
 Feche o VS Code e abra de novo. Se ainda nao aparecer, rode:

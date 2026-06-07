@@ -1,5 +1,14 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -Eeuo pipefail
+
+on_error() {
+  local status="$?" line="${BASH_LINENO[0]:-$LINENO}" command_text="${BASH_COMMAND:-comando desconhecido}"
+  printf '\nERROR: instalador interrompido antes de concluir. Linha %s, status %s.\n' "$line" "$status" >&2
+  printf 'Ultimo comando: %s\n' "$command_text" >&2
+  printf 'Rode novamente o mesmo comando. Se repetir, envie essas linhas ao suporte.\n' >&2
+}
+
+trap on_error ERR
 
 DGSIS_BASE_URL="https://gtw.dgsis.com.br/v1"
 DGSIS_MODEL="cx/gpt-5.5"
@@ -188,20 +197,42 @@ install_homebrew() {
 }
 
 brew_install_formula() {
-  local formula="$1"
-  if brew list --formula "$formula" >/dev/null 2>&1; then
+  local formula="$1" tool="${2:-$1}"
+  if command -v "$tool" >/dev/null 2>&1 && brew list --formula "$formula" >/dev/null 2>&1; then
     ok "$formula ja instalado"
     return 0
   fi
-  brew install "$formula"
+
+  if brew list --formula "$formula" >/dev/null 2>&1; then
+    if command -v "$tool" >/dev/null 2>&1; then
+      ok "$formula ja instalado"
+      return 0
+    fi
+    fail "$formula ja esta instalado, mas comando $tool nao entrou no PATH. Feche e abra o Terminal e rode de novo."
+  fi
+
+  if brew install "$formula"; then
+    if command -v "$tool" >/dev/null 2>&1; then
+      ok "$formula instalado"
+      return 0
+    fi
+    fail "$formula instalado, mas comando $tool nao entrou no PATH. Feche e abra o Terminal e rode de novo."
+  fi
+
+  if command -v "$tool" >/dev/null 2>&1; then
+    warn "brew install $formula retornou erro, mas $tool ja esta disponivel; continuando."
+    return 0
+  fi
+
+  fail "Falha ao instalar $formula via Homebrew. Rode manualmente: brew install $formula"
 }
 
 install_mac_dependencies() {
   command -v curl >/dev/null 2>&1 || fail "curl nao encontrado."
   install_homebrew
-  brew_install_formula git
-  brew_install_formula node
-  brew_install_formula python
+  brew_install_formula git git
+  brew_install_formula node node
+  brew_install_formula python python3
 }
 
 install_linux_dependencies() {
@@ -217,9 +248,9 @@ install_linux_dependencies() {
   fi
 
   if command -v brew >/dev/null 2>&1; then
-    brew_install_formula git
-    brew_install_formula node
-    brew_install_formula python
+    brew_install_formula git git
+    brew_install_formula node node
+    brew_install_formula python python3
     return 0
   fi
 
@@ -676,7 +707,7 @@ run_shell_tool_test() {
 
 self_test() {
   step "Executando autotestes Unix"
-  local tmp old_home old_codex_home profile mode
+  local tmp old_home old_codex_home old_path profile mode fakebin
   tmp="$(mktemp -d)"
   old_home="$HOME"
   old_codex_home="${CODEX_HOME:-}"
@@ -729,6 +760,26 @@ EOF
   profile="$(pick_profile)"
   [ "$(grep -Fc 'dgsis.env' "$profile")" = "1" ] || fail "Autoteste falhou: profile com source duplicado."
 
+  fakebin="$tmp/bin"
+  old_path="$PATH"
+  mkdir -p "$fakebin"
+  cat >"$fakebin/brew" <<'SH'
+#!/bin/sh
+case "$1" in
+  list) exit 1 ;;
+  install) exit 1 ;;
+  *) exit 1 ;;
+esac
+SH
+  cat >"$fakebin/python3" <<'SH'
+#!/bin/sh
+exit 0
+SH
+  chmod 755 "$fakebin/brew" "$fakebin/python3"
+  PATH="$fakebin:$PATH"
+  brew_install_formula python python3
+  PATH="$old_path"
+
   HOME="$old_home"
   export HOME
   if [ -n "$old_codex_home" ]; then
@@ -752,17 +803,6 @@ case "$(uname -s)" in
   *) fail "Este instalador e somente para macOS/Linux. No Windows use install.ps1." ;;
 esac
 
-step "Instalando dependencias do sistema"
-install_dependencies
-ok "Dependencias verificadas"
-
-step "Instalando ou atualizando Codex CLI standalone"
-install_codex_cli
-ok "Codex CLI pronto: $(codex --version)"
-
-step "Instalando Codex no VS Code"
-install_vscode_extension
-
 step "Solicitando token DGSIS"
 token="$(read_token)"
 
@@ -775,6 +815,17 @@ else
   persist_token "$token"
   ok "Token validado e salvo em $ENV_FILE"
 fi
+
+step "Instalando dependencias do sistema"
+install_dependencies
+ok "Dependencias verificadas"
+
+step "Instalando ou atualizando Codex CLI standalone"
+install_codex_cli
+ok "Codex CLI pronto: $(codex --version)"
+
+step "Instalando Codex no VS Code"
+install_vscode_extension
 
 step "Gerando catalogo local DGSIS para o seletor de modelos"
 generate_catalog

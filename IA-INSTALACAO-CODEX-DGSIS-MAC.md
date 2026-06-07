@@ -141,6 +141,18 @@ Nao deve pedir login OpenAI. A extensao usa a mesma configuracao local do CLI e 
 
 Rode novamente em Terminal interativo e deixe o cliente digitar a senha local. Se continuar falhando, instale Homebrew manualmente pelo site oficial e rode o instalador de novo.
 
+### Aviso do Python/Homebrew e prompt voltou
+
+Avisos como `Unversioned symlinks python`, `idle3.14 requires tkinter`, `dbm.gnu is available separately` e link `Homebrew-and-Python` sao caveats normais do Homebrew.
+
+Se o prompt voltou sem pedir token ou sem `Instalacao concluida`, rode novamente o comando principal. A versao atual pede token antes das dependencias e mostra `ERROR:` com linha/status se algum comando interromper o instalador.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/soxvip/codex-dgsis-installer/main/install.sh | bash
+```
+
+Se repetir, envie ao suporte o trecho desde `==>` ate `ERROR:`. Nao envie token.
+
 ### Token invalido
 
 Rode o instalador de novo e peca token correto:
