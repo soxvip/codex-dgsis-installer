@@ -2,7 +2,7 @@
 
 Use este arquivo como instrucao operacional para outro agente de IA que esteja controlando a maquina do cliente.
 
-Objetivo: deixar Codex CLI e Codex no VS Code funcionando com gateway DGSIS, sem login OpenAI pelo site, usando token DGSIS informado pelo cliente.
+Objetivo: deixar Codex CLI, Codex Desktop e Codex no VS Code funcionando com gateway DGSIS, sem login OpenAI pelo site, usando token DGSIS informado pelo cliente.
 
 ## Regra de seguranca sobre token
 
@@ -50,6 +50,7 @@ Se precisar reinstalar ou trocar token, rode o mesmo comando de instalacao e dei
 
 - Instalar Git, Node.js LTS, Python e VS Code via `winget`.
 - Instalar Codex CLI oficial.
+- Instalar ou abrir Codex Desktop via `codex app`.
 - Instalar extensao VS Code `openai.chatgpt`.
 - Salvar token em variavel de usuario `DGSIS_API_KEY`.
 - Criar `%USERPROFILE%\.codex\model-catalogs\dgsis.json`.
@@ -58,7 +59,7 @@ Se precisar reinstalar ou trocar token, rode o mesmo comando de instalacao e dei
 - Configurar `[shell_environment_policy]` com PATH estavel.
 - Criar shim `pwsh.exe` em `%LOCALAPPDATA%\Programs\OpenAI\Codex\bin`.
 - Ajustar profiles PowerShell para evitar `pwsh.exe` da Microsoft Store.
-- Rodar `codex doctor` e testes vivos.
+- Rodar `codex doctor`, testes vivos e acionar Codex Desktop com `CODEX_HOME` correto.
 
 ## Validacao obrigatoria apos instalacao
 
@@ -110,6 +111,23 @@ Criterios:
 - JSONL mostra comando com `exit_code:0`.
 - JSONL nao mostra `CreateProcessAsUserW failed`.
 - JSONL nao mostra `windows sandbox: runner error`.
+
+## Validacao Codex Desktop
+
+Execute em nova janela PowerShell:
+
+```powershell
+codex app "$env:USERPROFILE"
+```
+
+No Codex Desktop:
+
+1. Selecione `Local`.
+2. Abra workspace do usuario.
+3. Envie `Responda exatamente CODEX_DESKTOP_READY e nada mais.`
+4. Confirme resposta `CODEX_DESKTOP_READY`.
+
+Se pedir login OpenAI, feche o app e abra pelo PowerShell com `codex app "$env:USERPROFILE"` para herdar o ambiente configurado.
 
 ## Validacao VS Code
 
@@ -168,6 +186,7 @@ Confirme com suporte DGSIS que token tem acesso a `cx/gpt-5.5`.
 Ao terminar, reporte somente:
 
 - Codex CLI instalado.
+- Codex Desktop acionado.
 - VS Code extension instalada.
 - `codex doctor` sem problemas.
 - Modelo ativo `cx/gpt-5.5`.

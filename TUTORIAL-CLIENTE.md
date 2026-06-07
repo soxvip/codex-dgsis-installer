@@ -1,6 +1,6 @@
 # Tutorial para cliente: instalar Codex DGSIS no Windows
 
-Este tutorial instala Codex CLI, dependencias de desenvolvimento, extensao do VS Code e configuracao DGSIS. O login em conta OpenAI pelo site nao e necessario. O acesso usa o token DGSIS do cliente.
+Este tutorial instala Codex CLI, Codex Desktop, dependencias de desenvolvimento, extensao do VS Code e configuracao DGSIS. O login em conta OpenAI pelo site nao e necessario. O acesso usa o token DGSIS do cliente.
 
 ## Antes de comecar
 
@@ -33,6 +33,7 @@ O instalador pode demorar porque baixa dependencias e instala o Codex CLI.
 - Visual Studio Code
 - Extensao VS Code `openai.chatgpt`
 - Codex CLI oficial
+- Codex Desktop oficial
 - Configuracao DGSIS em `%USERPROFILE%\.codex\config.toml`
 
 ## Resultado esperado
@@ -43,6 +44,7 @@ No final, deve aparecer algo parecido com:
 OK: codex doctor: todos checks ok
 OK: Codex respondeu com model: cx/gpt-5.5
 OK: Shell tool executou comando real sem erro de sandbox
+OK: Codex Desktop acionado com CODEX_HOME=%USERPROFILE%\.codex
 Instalacao concluida.
 ```
 
@@ -85,6 +87,26 @@ ok
 5. Envie uma mensagem simples.
 
 O chat deve funcionar sem abrir login no site. Ele usa a configuracao local criada pelo instalador e o token `DGSIS_API_KEY` salvo no ambiente do usuario.
+
+## Testar no Codex Desktop
+
+1. Se o Codex Desktop nao estiver aberto, rode no PowerShell:
+
+```powershell
+codex app "$env:USERPROFILE"
+```
+
+2. No Codex Desktop, selecione `Local`.
+3. Abra o workspace do usuario.
+4. Envie: `Responda exatamente CODEX_DESKTOP_READY e nada mais.`
+
+Resposta esperada:
+
+```text
+CODEX_DESKTOP_READY
+```
+
+Se pedir login OpenAI, feche o Codex Desktop, abra uma nova janela PowerShell e rode o comando `codex app "$env:USERPROFILE"` novamente.
 
 ## Reinstalar ou trocar token
 

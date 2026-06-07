@@ -4,6 +4,7 @@ param(
     [string]$ArchitectureOverride = "",
     [switch]$SkipDependencies,
     [switch]$SkipVSCode,
+    [switch]$SkipDesktop,
     [switch]$SkipLiveTests,
     [switch]$SelfTest
 )
@@ -300,6 +301,53 @@ function Install-CodexVSCodeExtension {
     return
 }
 
+function Install-CodexDesktopApp {
+    param(
+        [string]$CodexExe,
+        [string]$CodexHome,
+        [string]$WorkspacePath
+    )
+
+    if ($SkipDesktop) {
+        Write-Host "Pulando Codex Desktop por -SkipDesktop." -ForegroundColor Yellow
+        return
+    }
+
+    if (-not (Test-Path -LiteralPath $CodexExe -PathType Leaf)) {
+        Fail "Nao encontrei codex.exe para instalar/abrir Codex Desktop."
+    }
+
+    if ($WorkspacePath.Contains('"')) {
+        Fail "Caminho do workspace contem aspas e nao pode ser passado para codex app: $WorkspacePath"
+    }
+
+    Write-Step "Instalando ou abrindo Codex Desktop"
+    $oldCodexHome = $env:CODEX_HOME
+    $process = $null
+    $completed = $false
+    try {
+        $env:CODEX_HOME = $CodexHome
+        $workspaceArg = '"' + $WorkspacePath + '"'
+        $process = Start-Process -FilePath $CodexExe -ArgumentList @("app", $workspaceArg) -WorkingDirectory $WorkspacePath -WindowStyle Hidden -PassThru
+        $completed = $process.WaitForExit(45000)
+    }
+    catch {
+        Fail "Falha ao iniciar Codex Desktop: $($_.Exception.Message)"
+    }
+    finally {
+        $env:CODEX_HOME = $oldCodexHome
+    }
+
+    if ($completed -and $process.ExitCode -ne 0) {
+        Fail "Falha ao instalar ou abrir Codex Desktop. Codigo: $($process.ExitCode)"
+    }
+
+    if (-not $completed) {
+        Write-Host "Codex Desktop ainda inicializando em segundo plano." -ForegroundColor Yellow
+    }
+
+    Write-Ok "Codex Desktop acionado com CODEX_HOME=$CodexHome"
+}
 function Set-TextFileUtf8NoBom {
     param(
         [string]$Path,
@@ -1234,6 +1282,32 @@ function Invoke-InstallerSelfTest {
         }
     }
 
+    $desktopTemp = Join-Path ([System.IO.Path]::GetTempPath()) ("codex-dgsis-desktop-selftest-{0}" -f ([Guid]::NewGuid().ToString("N")))
+    try {
+        $desktopWorkspace = Join-Path $desktopTemp "workspace com espaco"
+        New-Item -ItemType Directory -Force -Path $desktopWorkspace | Out-Null
+        $fakeCodex = Join-Path $desktopTemp "codex.cmd"
+        $desktopResult = Join-Path $desktopTemp "desktop-result.txt"
+        $fakeCodexScript = @(
+            '@echo off',
+            'if not "%~1"=="app" exit /b 11',
+            ('if not "%~2"=="{0}" exit /b 12' -f $desktopWorkspace),
+            ('if not "%CODEX_HOME%"=="{0}" exit /b 13' -f $desktopTemp),
+            ('> "{0}" echo DESKTOP_SELFTEST_OK' -f $desktopResult),
+            'exit /b 0'
+        ) -join "`r`n"
+        Set-TextFileUtf8NoBom -Path $fakeCodex -Content $fakeCodexScript
+        Install-CodexDesktopApp -CodexExe $fakeCodex -CodexHome $desktopTemp -WorkspacePath $desktopWorkspace
+        if (-not (Test-Path -LiteralPath $desktopResult) -or ((Get-Content -LiteralPath $desktopResult -Raw).Trim() -ne "DESKTOP_SELFTEST_OK")) {
+            Fail "Autoteste falhou: simulacao do Codex Desktop nao confirmou argumentos e CODEX_HOME."
+        }
+    }
+    finally {
+        if (Test-Path -LiteralPath $desktopTemp) {
+            Remove-Item -LiteralPath $desktopTemp -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
     Write-Ok "Autotestes Windows passaram"
 }
 
@@ -1484,6 +1558,8 @@ else {
     Write-Ok "Codex respondeu com model: cx/gpt-5.5"
     Invoke-CodexShellToolTest -CodexExe $preferredCodexExe
 }
+
+Install-CodexDesktopApp -CodexExe $preferredCodexExe -CodexHome $codexHome -WorkspacePath $env:USERPROFILE
 
 Write-Host ""
 Write-Host "Instalacao concluida." -ForegroundColor Green

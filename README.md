@@ -1,6 +1,6 @@
 # Codex DGSIS Installer
 
-Instaladores Windows e macOS para deixar Codex CLI, Codex no VS Code e gateway DGSIS prontos para uso com token do cliente.
+Instaladores Windows e macOS para deixar Codex CLI, Codex Desktop, Codex no VS Code e gateway DGSIS prontos para uso com token do cliente.
 
 O cliente nao precisa fazer login no site da OpenAI. Durante a instalacao, ele informa o token DGSIS. Depois disso, Codex CLI e extensao do VS Code usam a configuracao local em `.codex`.
 
@@ -28,6 +28,7 @@ Quando pedir, cole o token DGSIS do cliente. Se o Mac pedir senha, e a senha loc
 
 - Instala dependencias via `winget`: Git, Node.js LTS, Python e VS Code.
 - Instala ou atualiza o Codex CLI pelo instalador oficial da OpenAI.
+- Instala ou abre o Codex Desktop com `codex app`.
 - Instala a extensao VS Code `openai.chatgpt`.
 - Salva o token em `DGSIS_API_KEY` no ambiente do usuario.
 - Configura `~\.codex\config.toml` para usar o provider `dgsis` e o modelo `cx/gpt-5.5`.
@@ -66,6 +67,7 @@ Quando pedir, cole o token DGSIS do cliente. Se o Mac pedir senha, e a senha loc
 .\install.ps1 -Token "TOKEN_DGSIS_AQUI"
 .\install.ps1 -SkipDependencies
 .\install.ps1 -SkipVSCode
+.\install.ps1 -SkipDesktop
 .\install.ps1 -SkipLiveTests
 .\install.ps1 -SelfTest
 ```
@@ -96,7 +98,8 @@ No final, o instalador deve mostrar:
 codex doctor sem warning/fail
 Codex respondeu com model: cx/gpt-5.5
 Shell tool executou comando real sem erro
+Codex Desktop acionado com CODEX_HOME=
 Instalacao concluida.
 ```
 
-Depois, feche e abra Terminal/PowerShell e VS Code. No VS Code, abra a barra lateral Codex/ChatGPT e envie uma mensagem. Deve funcionar sem login no site, usando o token DGSIS salvo localmente.
+Depois, feche e abra Terminal/PowerShell, VS Code e Codex Desktop. No VS Code, abra a barra lateral Codex/ChatGPT e envie uma mensagem. Deve funcionar sem login no site, usando o token DGSIS salvo localmente.
