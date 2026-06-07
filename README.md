@@ -33,12 +33,12 @@ Quando pedir, cole o token DGSIS do cliente. Se o Mac pedir senha, e a senha loc
 - Salva o token em `DGSIS_API_KEY` no ambiente do usuario.
 - Configura `~\.codex\config.toml` para usar o provider `dgsis` e o modelo `cx/gpt-5.5`.
 - Cria o catalogo local `~\.codex\model-catalogs\dgsis.json` com modelos OpenAI disponiveis em `/models`.
-- Atualiza `~\.codex\models_cache.json` para o seletor do Codex Desktop mostrar os modelos `cx/gpt-*`.
+- Atualiza `~\.codex\models_cache.json` como cache de compatibilidade e valida `codex app-server model/list` para a UI do Codex Desktop.
 - Filtra modelos externos como Claude, Gemini, DeepSeek, Qwen, Llama, Mistral e similares.
 - Habilita plugins bundled OpenAI: Browser, Chrome e Computer Use.
 - Corrige o bug do `pwsh.exe` da Microsoft Store que pode quebrar o sandbox no Windows.
 - Ajusta profiles PowerShell para novas sessoes priorizarem `Codex\bin`.
-- Executa validacoes: `codex --strict-config`, catalogo, `codex doctor`, resposta do Codex e shell tool real.
+- Executa validacoes: `codex --strict-config`, catalogo, `model/list` do Desktop, `codex doctor`, resposta do Codex e shell tool real.
 
 ## O que o instalador macOS faz
 
@@ -50,10 +50,10 @@ Quando pedir, cole o token DGSIS do cliente. Se o Mac pedir senha, e a senha loc
 - Cria `~/.codex/dgsis-token.sh` e configura `auth.command`, evitando depender de variavel de ambiente do Terminal para o VS Code.
 - Configura `~/.codex/config.toml` para usar provider `dgsis` e modelo `cx/gpt-5.5`.
 - Cria o catalogo local `~/.codex/model-catalogs/dgsis.json` com modelos OpenAI disponiveis em `/models`.
-- Atualiza `~/.codex/models_cache.json` para o seletor do Codex Desktop mostrar os modelos `cx/gpt-*`.
+- Atualiza `~/.codex/models_cache.json` como cache de compatibilidade e valida `codex app-server model/list` para a UI do Codex Desktop.
 - Filtra modelos externos como Claude, Gemini, DeepSeek, Qwen, Llama, Mistral e similares.
 - Habilita plugins bundled OpenAI: Browser, Chrome e Computer Use.
-- Executa validacoes: catalogo, `codex --strict-config`, `codex doctor`, resposta do Codex e shell tool real.
+- Executa validacoes: catalogo, `codex --strict-config`, `model/list` do Desktop, `codex doctor`, resposta do Codex e shell tool real.
 
 ## Arquivos principais
 
@@ -101,7 +101,8 @@ Use `--skip-live-tests` apenas quando a maquina nao puder consumir tokens durant
 No final, o instalador deve mostrar:
 
 ```text
-codex doctor sem warning/fail
+Codex Desktop model/list retornou 18 modelos DGSIS para a UI
+codex doctor validado
 Codex respondeu com model: cx/gpt-5.5
 Shell tool executou comando real sem erro
 Codex Desktop acionado com CODEX_HOME=

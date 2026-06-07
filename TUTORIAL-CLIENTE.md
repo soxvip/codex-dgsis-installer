@@ -36,7 +36,7 @@ O instalador pode demorar porque baixa dependencias e instala o Codex CLI.
 - Codex Desktop oficial
 - Configuracao DGSIS em `%USERPROFILE%\.codex\config.toml`
 - Catalogo de modelos OpenAI DGSIS em `%USERPROFILE%\.codex\model-catalogs\dgsis.json`
-- Cache do seletor do Codex Desktop em `%USERPROFILE%\.codex\models_cache.json`
+- Cache de compatibilidade em `%USERPROFILE%\.codex\models_cache.json` e seletor validado por `codex app-server model/list`
 - Plugins OpenAI Browser, Chrome e Computer Use habilitados
 
 ## Resultado esperado
@@ -44,6 +44,7 @@ O instalador pode demorar porque baixa dependencias e instala o Codex CLI.
 No final, deve aparecer algo parecido com:
 
 ```text
+OK: Codex Desktop model/list retornou 18 modelos DGSIS para a UI
 OK: codex doctor: todos checks ok
 OK: Codex respondeu com model: cx/gpt-5.5
 OK: Shell tool executou comando real sem erro de sandbox

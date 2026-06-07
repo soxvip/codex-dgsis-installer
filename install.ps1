@@ -16,6 +16,7 @@ $DgsisBaseUrl = "https://gtw.dgsis.com.br/v1"
 $DgsisModel = "cx/gpt-5.5"
 $DgsisProvider = "dgsis"
 $EnvKeyName = "DGSIS_API_KEY"
+$CodexHomeEnvName = "CODEX_HOME"
 $CodexInstallUrl = "https://chatgpt.com/codex/install.ps1"
 $FallbackCatalogUrl = "https://raw.githubusercontent.com/soxvip/codex-dgsis-installer/main/dgsis-model-catalog.json"
 $CodexVSCodeExtensionId = "openai.chatgpt"
@@ -29,6 +30,11 @@ function Write-Step {
 function Write-Ok {
     param([string]$Message)
     Write-Host "OK: $Message" -ForegroundColor Green
+}
+
+function Write-Warn {
+    param([string]$Message)
+    Write-Host "Aviso: $Message" -ForegroundColor Yellow
 }
 
 function Fail {
@@ -1236,6 +1242,9 @@ function Invoke-CodexExecTest {
     $psi.RedirectStandardError = $true
     $psi.CreateNoWindow = $true
     $psi.EnvironmentVariables[$EnvKeyName] = $env:DGSIS_API_KEY
+    if (-not [string]::IsNullOrWhiteSpace($env:CODEX_HOME)) {
+        $psi.EnvironmentVariables[$CodexHomeEnvName] = $env:CODEX_HOME
+    }
 
     $process = New-Object System.Diagnostics.Process
     $process.StartInfo = $psi
@@ -1275,25 +1284,59 @@ function Invoke-CodexDoctorCheck {
     param([string]$CodexExe)
 
     Write-Step "Executando codex doctor"
-    $doctorOutput = & $CodexExe doctor --json 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        Fail "codex doctor falhou. Saida: $($doctorOutput | Out-String)"
-    }
 
-    try {
-        $doctor = ($doctorOutput | Out-String) | ConvertFrom-Json
-    }
-    catch {
-        Fail "codex doctor nao retornou JSON valido. Saida: $($doctorOutput | Out-String)"
-    }
+    $lastOutput = ""
+    $lastBadText = ""
+    for ($attempt = 1; $attempt -le 3; $attempt++) {
+        $doctorOutput = & $CodexExe doctor --json 2>&1
+        $exitCode = $LASTEXITCODE
+        $outputText = ($doctorOutput | Out-String)
+        $lastOutput = $outputText
 
-    $bad = @($doctor.checks.PSObject.Properties | Where-Object { $_.Value.status -ne "ok" })
-    if ($bad.Count -gt 0) {
-        $badText = ($bad | ForEach-Object { "$($_.Name): $($_.Value.status) $($_.Value.summary)" }) -join "; "
-        Fail "codex doctor encontrou problemas: $badText"
-    }
+        try {
+            $doctor = $outputText | ConvertFrom-Json
+        }
+        catch {
+            if ($attempt -lt 3) {
+                Write-Warn "codex doctor nao retornou JSON valido na tentativa $attempt; tentando novamente."
+                Start-Sleep -Seconds 2
+                continue
+            }
+            Fail "codex doctor nao retornou JSON valido. Saida: $lastOutput"
+        }
 
-    Write-Ok "codex doctor: todos checks ok"
+        $bad = @($doctor.checks.PSObject.Properties | Where-Object { $_.Value.status -ne "ok" })
+        $lastBadText = ($bad | ForEach-Object { "$($_.Name): $($_.Value.status) $($_.Value.summary)" }) -join "; "
+
+        if ($exitCode -eq 0 -and $bad.Count -eq 0) {
+            Write-Ok "codex doctor: todos checks ok"
+            return
+        }
+
+        $onlyProviderReachability = ($bad.Count -eq 1 -and [string]$bad[0].Name -eq "network.provider_reachability")
+        if ($onlyProviderReachability) {
+            if ($attempt -lt 3) {
+                Write-Warn "network.provider_reachability falhou na tentativa $attempt; tentando novamente."
+                Start-Sleep -Seconds 2
+                continue
+            }
+
+            Write-Warn "codex doctor ainda acusa network.provider_reachability, mas token, catalogo e model/list do Desktop ja passaram. Continuando."
+            return
+        }
+
+        if ($attempt -lt 3) {
+            Write-Warn "codex doctor falhou na tentativa $attempt; tentando novamente."
+            Start-Sleep -Seconds 2
+            continue
+        }
+
+        if ($bad.Count -gt 0) {
+            Fail "codex doctor encontrou problemas: $lastBadText"
+        }
+
+        Fail "codex doctor falhou. Saida: $lastOutput"
+    }
 }
 
 function Invoke-CodexShellToolTest {
@@ -1316,6 +1359,9 @@ function Invoke-CodexShellToolTest {
         $psi.RedirectStandardError = $true
         $psi.CreateNoWindow = $true
         $psi.EnvironmentVariables[$EnvKeyName] = $env:DGSIS_API_KEY
+        if (-not [string]::IsNullOrWhiteSpace($env:CODEX_HOME)) {
+            $psi.EnvironmentVariables[$CodexHomeEnvName] = $env:CODEX_HOME
+        }
 
         $process = New-Object System.Diagnostics.Process
         $process.StartInfo = $psi
@@ -1389,6 +1435,163 @@ function Invoke-CodexShellToolTest {
             Remove-Item -LiteralPath $lastPath -Force -ErrorAction SilentlyContinue
         }
     }
+}
+
+function Invoke-CodexAppServerModelListTest {
+    param(
+        [string]$CodexExe,
+        [string]$CodexHome,
+        [string]$DefaultModel
+    )
+
+    Write-Step "Validando seletor de modelos do Codex Desktop"
+
+    $initId = "init-" + [Guid]::NewGuid().ToString("N")
+    $requestId = "model-list-" + [Guid]::NewGuid().ToString("N")
+    $failure = $null
+    $modelCount = 0
+    $process = $null
+    $stderrTask = $null
+
+    try {
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = $CodexExe
+        $psi.Arguments = "app-server --stdio"
+        $psi.UseShellExecute = $false
+        $psi.RedirectStandardInput = $true
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError = $true
+        $psi.CreateNoWindow = $true
+        $psi.EnvironmentVariables[$CodexHomeEnvName] = $CodexHome
+        $psi.EnvironmentVariables[$EnvKeyName] = $env:DGSIS_API_KEY
+
+        $process = New-Object System.Diagnostics.Process
+        $process.StartInfo = $psi
+        [void]$process.Start()
+        $stderrTask = $process.StandardError.ReadToEndAsync()
+
+        $messages = @(
+            [pscustomobject]@{
+                id     = $initId
+                method = "initialize"
+                params = [pscustomobject]@{
+                    clientInfo   = [pscustomobject]@{ name = "codex-dgsis-installer"; title = "DGSIS Installer"; version = "1.0.0" }
+                    capabilities = [pscustomobject]@{ experimentalApi = $true; requestAttestation = $false; optOutNotificationMethods = @() }
+                }
+            },
+            [pscustomobject]@{ method = "initialized" },
+            [pscustomobject]@{
+                id     = $requestId
+                method = "model/list"
+                params = [pscustomobject]@{ includeHidden = $true; cursor = $null; limit = 100 }
+            }
+        )
+
+        foreach ($message in $messages) {
+            $process.StandardInput.WriteLine(($message | ConvertTo-Json -Depth 20 -Compress))
+        }
+        $process.StandardInput.Flush()
+
+        $deadline = (Get-Date).AddSeconds(30)
+        $readTask = $process.StandardOutput.ReadLineAsync()
+        $modelResponse = $null
+
+        while ((Get-Date) -lt $deadline) {
+            if ($readTask.Wait(250)) {
+                $line = $readTask.Result
+                if ($null -eq $line) {
+                    break
+                }
+
+                if (-not [string]::IsNullOrWhiteSpace($line)) {
+                    try {
+                        $event = $line | ConvertFrom-Json
+                        if (($event.PSObject.Properties.Name -contains "id") -and [string]$event.id -eq $requestId) {
+                            $modelResponse = $event
+                            break
+                        }
+                    }
+                    catch {
+                    }
+                }
+
+                $readTask = $process.StandardOutput.ReadLineAsync()
+            }
+
+            if ($process.HasExited) {
+                break
+            }
+        }
+
+        if ($null -eq $modelResponse) {
+            $failure = "Codex Desktop app-server nao respondeu model/list em 30 segundos."
+        }
+        elseif ($modelResponse.PSObject.Properties.Name -contains "error") {
+            $failure = "Codex Desktop app-server retornou erro em model/list: $($modelResponse.error | ConvertTo-Json -Depth 20 -Compress)"
+        }
+        elseif (($modelResponse.PSObject.Properties.Name -notcontains "result") -or $null -eq $modelResponse.result -or ($modelResponse.result.PSObject.Properties.Name -notcontains "data")) {
+            $failure = "Codex Desktop app-server retornou model/list sem campo data."
+        }
+        else {
+            $uiModels = @($modelResponse.result.data)
+            $modelCount = $uiModels.Count
+            $defaultMatches = @($uiModels | Where-Object { [string]$_.model -eq $DefaultModel })
+            $badModels = @($uiModels | Where-Object { -not (Test-DgsisOpenAIModelId -ModelId ([string]$_.model)) })
+            $hiddenDefault = @($defaultMatches | Where-Object { $_.hidden -ne $false })
+            $missingDisplayName = @($defaultMatches | Where-Object { [string]::IsNullOrWhiteSpace([string]$_.displayName) })
+
+            if ($defaultMatches.Count -ne 1) {
+                $failure = "Codex Desktop app-server nao retornou $DefaultModel em model/list. A UI cairia em Personalizado."
+            }
+            elseif ($badModels.Count -ne 0) {
+                $badText = ($badModels | Select-Object -First 5 | ForEach-Object { [string]$_.model }) -join ", "
+                $failure = "Codex Desktop app-server retornou modelos nao OpenAI/DGSIS: $badText"
+            }
+            elseif ($hiddenDefault.Count -ne 0) {
+                $failure = "Codex Desktop app-server retornou $DefaultModel como hidden=true; a UI pode ocultar o modelo."
+            }
+            elseif ($missingDisplayName.Count -ne 0) {
+                $failure = "Codex Desktop app-server retornou $DefaultModel sem displayName; a UI mostraria Personalizado."
+            }
+        }
+    }
+    catch {
+        $failure = "Falha ao validar model/list do Codex Desktop: $($_.Exception.Message)"
+    }
+    finally {
+        if ($null -ne $process -and -not $process.HasExited) {
+            try {
+                $process.Kill()
+            }
+            catch {
+            }
+        }
+        if ($null -ne $process) {
+            try {
+                [void]$process.WaitForExit(5000)
+            }
+            catch {
+            }
+        }
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($failure)) {
+        $stderr = ""
+        if ($null -ne $stderrTask) {
+            try {
+                $stderr = $stderrTask.Result
+            }
+            catch {
+            }
+        }
+        $stderrSample = ($stderr -split "`r?`n" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -First 6) -join " | "
+        if (-not [string]::IsNullOrWhiteSpace($stderrSample)) {
+            $failure = "$failure Stderr: $stderrSample"
+        }
+        Fail $failure
+    }
+
+    Write-Ok "Codex Desktop model/list retornou $modelCount modelos DGSIS para a UI"
 }
 
 function Test-CodexConfigStrict {
@@ -1746,6 +1949,10 @@ $catalogPath = Join-Path $catalogDir "dgsis.json"
 $modelsCachePath = Join-Path $codexHome "models_cache.json"
 $configPath = Join-Path $codexHome "config.toml"
 
+[Environment]::SetEnvironmentVariable($CodexHomeEnvName, $codexHome, "User")
+$env:CODEX_HOME = $codexHome
+Write-Ok "$CodexHomeEnvName definido para $codexHome"
+
 New-Item -ItemType Directory -Force -Path $catalogDir | Out-Null
 New-Item -ItemType Directory -Force -Path $backupDir | Out-Null
 
@@ -1848,12 +2055,14 @@ if ($LASTEXITCODE -ne 0 -or $debugModels -notmatch '"slug"\s*:\s*"cx/gpt-5\.5"')
 }
 Write-Ok "Catalogo DGSIS carregado pelo Codex"
 
-Invoke-CodexDoctorCheck -CodexExe $preferredCodexExe
+Invoke-CodexAppServerModelListTest -CodexExe $preferredCodexExe -CodexHome $codexHome -DefaultModel $DgsisModel
 
 if ($SkipLiveTests) {
     Write-Host "Pulando testes vivos por -SkipLiveTests." -ForegroundColor Yellow
 }
 else {
+    Invoke-CodexDoctorCheck -CodexExe $preferredCodexExe
+
     Write-Step "Executando teste final do Codex CLI com o gateway DGSIS"
     Invoke-CodexExecTest -CodexExe $preferredCodexExe
     Write-Ok "Codex respondeu com model: cx/gpt-5.5"

@@ -54,7 +54,7 @@ Se precisar reinstalar ou trocar token, rode o mesmo comando de instalacao e dei
 - Instalar extensao VS Code `openai.chatgpt`.
 - Salvar token em variavel de usuario `DGSIS_API_KEY`.
 - Criar `%USERPROFILE%\.codex\model-catalogs\dgsis.json` com modelos OpenAI retornados por `/models`.
-- Atualizar `%USERPROFILE%\.codex\models_cache.json` para o seletor do Codex Desktop.
+- Atualizar `%USERPROFILE%\.codex\models_cache.json` como cache de compatibilidade e validar `codex app-server model/list` para a UI do Codex Desktop.
 - Excluir modelos Claude, Gemini, DeepSeek, Qwen, Llama, Mistral e similares do catalogo local.
 - Atualizar `%USERPROFILE%\.codex\config.toml` com provider `dgsis` e modelo `cx/gpt-5.5`.
 - Habilitar plugins bundled OpenAI: Browser, Chrome e Computer Use.

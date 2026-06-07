@@ -37,7 +37,7 @@ O instalador pode demorar porque baixa Homebrew, Git, Node.js, Python, VS Code e
 - Codex CLI oficial.
 - Configuracao DGSIS em `~/.codex/config.toml`.
 - Catalogo de modelos OpenAI DGSIS em `~/.codex/model-catalogs/dgsis.json`.
-- Cache do seletor do Codex Desktop em `~/.codex/models_cache.json`.
+- Cache de compatibilidade em `~/.codex/models_cache.json` e seletor validado por `codex app-server model/list`.
 - Plugins OpenAI Browser, Chrome e Computer Use habilitados.
 - Token em `~/.codex/dgsis.env` com permissao `600`.
 - Helper seguro `~/.codex/dgsis-token.sh` para o VS Code ler o token sem depender do Terminal.
@@ -47,7 +47,8 @@ O instalador pode demorar porque baixa Homebrew, Git, Node.js, Python, VS Code e
 No final, deve aparecer algo parecido com:
 
 ```text
-OK: codex doctor sem warning/fail
+OK: Codex Desktop model/list retornou 18 modelos DGSIS para a UI
+OK: codex doctor validado
 OK: Codex respondeu com model: cx/gpt-5.5
 OK: Shell tool executou comando real sem erro
 Instalacao concluida.

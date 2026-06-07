@@ -53,7 +53,7 @@ Nao pule os testes vivos. Eles confirmam que gateway, modelo, Codex CLI, `codex 
 - Criar helper `~/.codex/dgsis-token.sh` com permissao executavel.
 - Atualizar `~/.codex/config.toml` com provider `dgsis`, modelo `cx/gpt-5.5` e `[model_providers.dgsis.auth]`.
 - Criar `~/.codex/model-catalogs/dgsis.json` com modelos OpenAI retornados por `/models`.
-- Atualizar `~/.codex/models_cache.json` para o seletor do Codex Desktop.
+- Atualizar `~/.codex/models_cache.json` como cache de compatibilidade e validar `codex app-server model/list` para a UI do Codex Desktop.
 - Excluir modelos Claude, Gemini, DeepSeek, Qwen, Llama, Mistral e similares do catalogo local.
 - Habilitar plugins bundled OpenAI: Browser, Chrome e Computer Use.
 - Rodar `codex --strict-config`, `codex doctor`, resposta do modelo e shell tool real.

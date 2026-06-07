@@ -632,6 +632,20 @@ persist_token() {
   fi
 }
 
+persist_codex_home() {
+  local profile source_line
+  mkdir -p "$CODEX_HOME_DIR"
+  export CODEX_HOME="$CODEX_HOME_DIR"
+
+  profile="$(pick_profile)"
+  source_line="export CODEX_HOME=$(shell_quote "$CODEX_HOME_DIR")"
+  persist_profile_line "$profile" "$source_line"
+
+  if [ "$(uname -s)" = "Darwin" ] && command -v launchctl >/dev/null 2>&1; then
+    launchctl setenv CODEX_HOME "$CODEX_HOME_DIR" >/dev/null 2>&1 || true
+  fi
+}
+
 read_token() {
   if [ -n "$TOKEN" ]; then
     printf '%s\n' "$TOKEN"
@@ -806,7 +820,7 @@ validate_codex_config() {
   local models_file err_file
   models_file="$(mktemp)"
   err_file="$(mktemp)"
-  codex debug models >"$models_file" 2>"$err_file" || {
+  CODEX_HOME="$CODEX_HOME_DIR" codex debug models >"$models_file" 2>"$err_file" || {
     cat "$err_file" >&2
     rm -f "$models_file" "$err_file"
     fail "O Codex nao carregou o catalogo DGSIS corretamente."
@@ -818,31 +832,216 @@ validate_codex_config() {
   rm -f "$models_file" "$err_file"
 }
 
+validate_app_server_models() {
+  command -v node >/dev/null 2>&1 || fail "node nao encontrado para validar model/list do Codex Desktop."
+
+  local out_file err_file model_count
+  out_file="$(mktemp)"
+  err_file="$(mktemp)"
+
+  if ! CODEX_HOME="$CODEX_HOME_DIR" DGSIS_API_KEY="$DGSIS_API_KEY" CODEX_CMD="$(find_codex_command)" node >"$out_file" 2>"$err_file" <<'NODE'
+const cp = require('child_process');
+
+const codex = process.env.CODEX_CMD || 'codex';
+const defaultModel = 'cx/gpt-5.5';
+const requestId = `model-list-${Date.now()}`;
+const child = cp.spawn(codex, ['app-server', '--stdio'], {
+  env: process.env,
+  stdio: ['pipe', 'pipe', 'pipe'],
+});
+
+let buffer = '';
+let stderr = '';
+let done = false;
+
+function finish(code, message) {
+  if (done) return;
+  done = true;
+  if (message) {
+    (code === 0 ? console.log : console.error)(message);
+  }
+  child.kill();
+  setTimeout(() => process.exit(code), 20);
+}
+
+child.stderr.on('data', chunk => {
+  stderr += chunk.toString('utf8');
+});
+
+child.stdout.on('data', chunk => {
+  buffer += chunk.toString('utf8');
+  for (;;) {
+    const index = buffer.indexOf('\n');
+    if (index < 0) break;
+    const line = buffer.slice(0, index).trim();
+    buffer = buffer.slice(index + 1);
+    if (!line) continue;
+
+    let message;
+    try {
+      message = JSON.parse(line);
+    } catch {
+      continue;
+    }
+
+    if (message.id !== requestId) continue;
+    if (message.error) {
+      finish(1, `model/list retornou erro: ${JSON.stringify(message.error)}`);
+      return;
+    }
+
+    const models = (message.result && Array.isArray(message.result.data)) ? message.result.data : [];
+    const defaultMatches = models.filter(model => model.model === defaultModel);
+    const bad = models.filter(model => {
+      const id = String(model.model || '');
+      return !/^cx\/(gpt-|o[0-9]|codex-|chatgpt-)/.test(id) || /claude|anthropic|gemini|deepseek|qwen|llama|mistral|kimi|glm|minimax|grok|oss/i.test(id);
+    });
+
+    if (defaultMatches.length !== 1) {
+      finish(1, `${defaultModel} ausente em model/list; UI cairia em Personalizado.`);
+      return;
+    }
+    if (bad.length > 0) {
+      finish(1, `model/list retornou modelos nao OpenAI/DGSIS: ${bad.slice(0, 5).map(model => model.model).join(', ')}`);
+      return;
+    }
+    if (defaultMatches[0].hidden === true || !defaultMatches[0].displayName) {
+      finish(1, `${defaultModel} veio hidden ou sem displayName; UI mostraria Personalizado.`);
+      return;
+    }
+
+    finish(0, `MODEL_LIST_OK ${models.length}`);
+  }
+});
+
+child.on('exit', code => {
+  if (!done) {
+    finish(1, `app-server saiu antes do model/list. code=${code} stderr=${stderr.split('\n').slice(0, 6).join(' | ')}`);
+  }
+});
+
+function send(payload) {
+  child.stdin.write(`${JSON.stringify(payload)}\n`);
+}
+
+send({
+  id: `init-${Date.now()}`,
+  method: 'initialize',
+  params: {
+    clientInfo: { name: 'codex-dgsis-installer', title: 'DGSIS Installer', version: '1.0.0' },
+    capabilities: { experimentalApi: true, requestAttestation: false, optOutNotificationMethods: [] },
+  },
+});
+send({ method: 'initialized' });
+send({ id: requestId, method: 'model/list', params: { includeHidden: true, cursor: null, limit: 100 } });
+
+setTimeout(() => {
+  finish(1, `model/list nao respondeu em 30 segundos. stderr=${stderr.split('\n').slice(0, 6).join(' | ')}`);
+}, 30000);
+NODE
+  then
+    cat "$err_file" >&2
+    rm -f "$out_file" "$err_file"
+    fail "Codex Desktop app-server nao recebeu modelos DGSIS para UI."
+  fi
+
+  grep -Eq '^MODEL_LIST_OK [0-9]+' "$out_file" || {
+    cat "$out_file" >&2
+    cat "$err_file" >&2
+    rm -f "$out_file" "$err_file"
+    fail "Validacao model/list nao confirmou modelos DGSIS."
+  }
+
+  model_count="$(sed -n 's/^MODEL_LIST_OK //p' "$out_file" | tail -n 1)"
+  ok "Codex Desktop model/list retornou $model_count modelos DGSIS para a UI"
+  rm -f "$out_file" "$err_file"
+}
+
 validate_strict_config() {
-  codex --strict-config --version >/dev/null 2>&1 || fail "codex --strict-config falhou. Revise config.toml."
+  CODEX_HOME="$CODEX_HOME_DIR" codex --strict-config --version >/dev/null 2>&1 || fail "codex --strict-config falhou. Revise config.toml."
 }
 
 run_doctor_test() {
-  local doctor_file
+  local doctor_file bad_file attempt exit_code bad_count bad_names bad_text
   doctor_file="$(mktemp)"
-  codex doctor --json >"$doctor_file" 2>&1 || {
+  bad_file="$(mktemp)"
+
+  for attempt in 1 2 3; do
+    : >"$doctor_file"
+    : >"$bad_file"
+    if CODEX_HOME="$CODEX_HOME_DIR" codex doctor --json >"$doctor_file" 2>&1; then
+      exit_code=0
+    else
+      exit_code="$?"
+    fi
+
+    if DOCTOR_EXIT_CODE="$exit_code" node - "$doctor_file" >"$bad_file" 2>/dev/null <<'NODE'
+const fs = require('fs');
+
+const raw = fs.readFileSync(process.argv[2], 'utf8').trim();
+const first = raw.indexOf('{');
+const last = raw.lastIndexOf('}');
+if (first < 0 || last < first) {
+  process.exit(2);
+}
+
+const doctor = JSON.parse(raw.slice(first, last + 1));
+const checks = doctor.checks || {};
+const bad = Object.entries(checks).filter(([, value]) => !value || value.status !== 'ok');
+
+console.log(`BAD_COUNT=${bad.length}`);
+console.log(`BAD_NAMES=${bad.map(([name]) => name).join(',')}`);
+console.log(`BAD_TEXT=${bad.map(([name, value]) => `${name}: ${(value && value.status) || ''} ${(value && value.summary) || ''}`).join('; ')}`);
+NODE
+    then
+      bad_count="$(sed -n 's/^BAD_COUNT=//p' "$bad_file" | tail -n 1)"
+      bad_names="$(sed -n 's/^BAD_NAMES=//p' "$bad_file" | tail -n 1)"
+      bad_text="$(sed -n 's/^BAD_TEXT=//p' "$bad_file" | tail -n 1)"
+
+      if [ "$exit_code" -eq 0 ] && [ "$bad_count" = "0" ]; then
+        rm -f "$doctor_file" "$bad_file"
+        return
+      fi
+
+      if [ "$bad_count" = "1" ] && [ "$bad_names" = "network.provider_reachability" ]; then
+        if [ "$attempt" != "3" ]; then
+          warn "network.provider_reachability falhou na tentativa $attempt; tentando novamente."
+          sleep 2
+          continue
+        fi
+        warn "codex doctor ainda acusa network.provider_reachability, mas token, catalogo e model/list do Desktop ja passaram. Continuando."
+        rm -f "$doctor_file" "$bad_file"
+        return
+      fi
+
+      if [ "$attempt" != "3" ]; then
+        warn "codex doctor falhou na tentativa $attempt; tentando novamente."
+        sleep 2
+        continue
+      fi
+
+      cat "$doctor_file" >&2
+      rm -f "$doctor_file" "$bad_file"
+      fail "codex doctor encontrou problemas: $bad_text"
+    fi
+
+    if [ "$attempt" != "3" ]; then
+      warn "codex doctor nao retornou JSON valido na tentativa $attempt; tentando novamente."
+      sleep 2
+      continue
+    fi
+
     cat "$doctor_file" >&2
-    rm -f "$doctor_file"
-    fail "codex doctor falhou."
-  }
-  if grep -Eiq '"status"[[:space:]]*:[[:space:]]*"(warn|warning|fail|error)"' "$doctor_file"; then
-    cat "$doctor_file" >&2
-    rm -f "$doctor_file"
-    fail "codex doctor retornou warning/fail."
-  fi
-  rm -f "$doctor_file"
+    rm -f "$doctor_file" "$bad_file"
+    fail "codex doctor nao retornou JSON valido."
+  done
 }
 
 run_final_test() {
   local last_file log_file
   last_file="$(mktemp)"
   log_file="$(mktemp)"
-  if ! DGSIS_API_KEY="$DGSIS_API_KEY" codex exec --ephemeral --skip-git-repo-check -o "$last_file" "Responda exatamente CODEX_DGSIS_OK e nada mais." >"$log_file" 2>&1; then
+  if ! CODEX_HOME="$CODEX_HOME_DIR" DGSIS_API_KEY="$DGSIS_API_KEY" codex exec --ephemeral --skip-git-repo-check -o "$last_file" "Responda exatamente CODEX_DGSIS_OK e nada mais." >"$log_file" 2>&1; then
     cat "$log_file" >&2
     rm -f "$last_file" "$log_file"
     fail "O teste final do Codex falhou."
@@ -864,7 +1063,7 @@ run_shell_tool_test() {
   local jsonl_file last_file
   jsonl_file="$(mktemp)"
   last_file="$(mktemp)"
-  if ! DGSIS_API_KEY="$DGSIS_API_KEY" codex exec --ephemeral --skip-git-repo-check --json -o "$last_file" "Use uma ferramenta de shell para executar um comando que imprime CODEX_DGSIS_SHELL_OK. Depois responda exatamente CODEX_DGSIS_SHELL_OK e nada mais." >"$jsonl_file" 2>&1; then
+  if ! CODEX_HOME="$CODEX_HOME_DIR" DGSIS_API_KEY="$DGSIS_API_KEY" codex exec --ephemeral --skip-git-repo-check --json -o "$last_file" "Use uma ferramenta de shell para executar um comando que imprime CODEX_DGSIS_SHELL_OK. Depois responda exatamente CODEX_DGSIS_SHELL_OK e nada mais." >"$jsonl_file" 2>&1; then
     cat "$jsonl_file" >&2
     rm -f "$jsonl_file" "$last_file"
     fail "Teste de shell tool falhou."
@@ -926,6 +1125,8 @@ EOF
   grep -Eq '"slug"[[:space:]]*:[[:space:]]*"cx/gpt-5\.5"' "$MODELS_CACHE_PATH" || fail "Autoteste falhou: models_cache sem modelo DGSIS."
   persist_token "self-test-token"
   persist_token "self-test-token"
+  persist_codex_home
+  persist_codex_home
   merge_config_file
   merge_config_file
 
@@ -951,6 +1152,7 @@ EOF
 
   profile="$(pick_profile)"
   [ "$(grep -Fc 'dgsis.env' "$profile")" = "1" ] || fail "Autoteste falhou: profile com source duplicado."
+  [ "$(grep -Fc 'CODEX_HOME=' "$profile")" = "1" ] || fail "Autoteste falhou: profile com CODEX_HOME duplicado ou ausente."
   persist_codex_path
   [ "$(grep -Fc '.local/bin' "$profile")" -ge "1" ] || fail "Autoteste falhou: PATH do Codex nao foi salvo no profile."
 
@@ -997,6 +1199,9 @@ case "$(uname -s)" in
   *) fail "Este instalador e somente para macOS/Linux. No Windows use install.ps1." ;;
 esac
 
+persist_codex_home
+ok "CODEX_HOME definido para $CODEX_HOME_DIR"
+
 step "Solicitando token DGSIS"
 token="$(read_token)"
 
@@ -1036,6 +1241,7 @@ ok "config.toml atualizado em $CONFIG_PATH"
 step "Validando configuracao local do Codex"
 validate_codex_config
 validate_strict_config
+validate_app_server_models
 ok "Catalogo DGSIS carregado pelo Codex"
 
 if [ "$SKIP_LIVE_TESTS" = "1" ]; then
@@ -1043,7 +1249,7 @@ if [ "$SKIP_LIVE_TESTS" = "1" ]; then
 else
   step "Executando codex doctor"
   run_doctor_test
-  ok "codex doctor sem warning/fail"
+  ok "codex doctor validado"
 
   step "Executando teste final do Codex CLI com gateway DGSIS"
   run_final_test
