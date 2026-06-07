@@ -149,6 +149,39 @@ function Test-CommandAvailable {
     return $null -ne (Get-Command $Name -ErrorAction SilentlyContinue)
 }
 
+function Invoke-NativeProcessCapture {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$FilePath,
+        [string[]]$ArgumentList = @()
+    )
+
+    $stdoutPath = Join-Path $env:TEMP ("codex-dgsis-stdout-{0}.txt" -f ([Guid]::NewGuid().ToString("N")))
+    $stderrPath = Join-Path $env:TEMP ("codex-dgsis-stderr-{0}.txt" -f ([Guid]::NewGuid().ToString("N")))
+
+    try {
+        $process = Start-Process -FilePath $FilePath -ArgumentList $ArgumentList -NoNewWindow -Wait -PassThru -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
+        $stdout = @()
+        $stderr = @()
+
+        if (Test-Path -LiteralPath $stdoutPath) {
+            $stdout = @(Get-Content -LiteralPath $stdoutPath -ErrorAction SilentlyContinue)
+        }
+        if (Test-Path -LiteralPath $stderrPath) {
+            $stderr = @(Get-Content -LiteralPath $stderrPath -ErrorAction SilentlyContinue)
+        }
+
+        return [pscustomobject]@{
+            ExitCode = $process.ExitCode
+            Stdout = $stdout
+            Stderr = $stderr
+        }
+    }
+    finally {
+        Remove-Item -LiteralPath $stdoutPath, $stderrPath -Force -ErrorAction SilentlyContinue
+    }
+}
+
 function Install-WingetPackage {
     param(
         [string]$Id,
@@ -216,6 +249,41 @@ function Install-ClientDependencies {
     }
 }
 
+function Install-CodexVSCodeExtensionWithCapture {
+    $codeCommand = Get-Command code -ErrorAction SilentlyContinue
+    if ($null -eq $codeCommand) {
+        Write-Host "Aviso: comando code nao encontrado. VS Code pode precisar ser aberto uma vez ou PATH atualizado." -ForegroundColor Yellow
+        return
+    }
+
+    $result = Invoke-NativeProcessCapture -FilePath $codeCommand.Source -ArgumentList @("--install-extension", $CodexVSCodeExtensionId, "--force")
+    foreach ($line in @($result.Stdout)) {
+        if (-not [string]::IsNullOrWhiteSpace($line)) {
+            Write-Host $line
+        }
+    }
+    foreach ($line in @($result.Stderr)) {
+        if (-not [string]::IsNullOrWhiteSpace($line)) {
+            Write-Host $line -ForegroundColor Yellow
+        }
+    }
+
+    $listResult = Invoke-NativeProcessCapture -FilePath $codeCommand.Source -ArgumentList @("--list-extensions")
+    $installedExtensions = New-Object System.Collections.Generic.List[string]
+    foreach ($line in @($listResult.Stdout)) {
+        [void]$installedExtensions.Add($line.Trim())
+    }
+
+    if ($result.ExitCode -ne 0 -and -not $installedExtensions.Contains($CodexVSCodeExtensionId)) {
+        Fail "Falha ao instalar extensao VS Code $CodexVSCodeExtensionId."
+    }
+    if ($listResult.ExitCode -eq 0 -and -not $installedExtensions.Contains($CodexVSCodeExtensionId)) {
+        Fail "VS Code nao confirmou a extensao $CodexVSCodeExtensionId apos a instalacao."
+    }
+
+    Write-Ok "Extensao VS Code pronta: $CodexVSCodeExtensionId"
+}
+
 function Install-CodexVSCodeExtension {
     if ($SkipVSCode) {
         Write-Host "Pulando VS Code por -SkipVSCode." -ForegroundColor Yellow
@@ -228,17 +296,8 @@ function Install-CodexVSCodeExtension {
     }
 
     Write-Step "Instalando extensao Codex/ChatGPT no VS Code"
-    $output = & code --install-extension $CodexVSCodeExtensionId --force 2>&1
-    $exitCode = $LASTEXITCODE
-    foreach ($line in $output) {
-        Write-Host $line
-    }
-
-    if ($exitCode -ne 0) {
-        Fail "Falha ao instalar extensao VS Code $CodexVSCodeExtensionId."
-    }
-
-    Write-Ok "Extensao VS Code pronta: $CodexVSCodeExtensionId"
+    Install-CodexVSCodeExtensionWithCapture
+    return
 }
 
 function Set-TextFileUtf8NoBom {
@@ -1153,6 +1212,25 @@ function Invoke-InstallerSelfTest {
     finally {
         if (Test-Path -LiteralPath $tempFile) {
             Remove-Item -LiteralPath $tempFile -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    $nativeTemp = Join-Path ([System.IO.Path]::GetTempPath()) ("codex-dgsis-native-selftest-{0}" -f ([Guid]::NewGuid().ToString("N")))
+    try {
+        New-Item -ItemType Directory -Force -Path $nativeTemp | Out-Null
+        $stderrScript = Join-Path $nativeTemp "stderr-test.ps1"
+        Set-TextFileUtf8NoBom -Path $stderrScript -Content "[Console]::Out.WriteLine('STDOUT_OK')`n[Console]::Error.WriteLine('STDERR_WARNING')`nexit 0"
+        $powershellCommand = Get-Command powershell -ErrorAction SilentlyContinue
+        if ($null -ne $powershellCommand) {
+            $nativeResult = Invoke-NativeProcessCapture -FilePath $powershellCommand.Source -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $stderrScript)
+            if ($nativeResult.ExitCode -ne 0 -or @($nativeResult.Stdout) -notcontains "STDOUT_OK" -or @($nativeResult.Stderr) -notcontains "STDERR_WARNING") {
+                Fail "Autoteste falhou: captura de stderr nativo invalida."
+            }
+        }
+    }
+    finally {
+        if (Test-Path -LiteralPath $nativeTemp) {
+            Remove-Item -LiteralPath $nativeTemp -Recurse -Force -ErrorAction SilentlyContinue
         }
     }
 
