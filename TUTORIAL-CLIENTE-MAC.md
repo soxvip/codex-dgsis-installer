@@ -37,6 +37,7 @@ O instalador pode demorar porque baixa Homebrew, Git, Node.js, Python, VS Code e
 - Codex CLI oficial.
 - Configuracao DGSIS em `~/.codex/config.toml`.
 - Catalogo de modelos OpenAI DGSIS em `~/.codex/model-catalogs/dgsis.json`.
+- Cache do seletor do Codex Desktop em `~/.codex/models_cache.json`.
 - Plugins OpenAI Browser, Chrome e Computer Use habilitados.
 - Token em `~/.codex/dgsis.env` com permissao `600`.
 - Helper seguro `~/.codex/dgsis-token.sh` para o VS Code ler o token sem depender do Terminal.
@@ -198,6 +199,7 @@ Para confirmar que nao entrou modelo externo:
 
 ```bash
 grep -Ei 'claude|gemini|qwen|llama|deepseek|mistral' ~/.codex/model-catalogs/dgsis.json || echo OK_APENAS_OPENAI
+grep -Ei 'claude|gemini|qwen|llama|deepseek|mistral' ~/.codex/models_cache.json || echo OK_CACHE_APENAS_OPENAI
 ```
 
-Esperado: `OK_APENAS_OPENAI`.
+Esperado: `OK_APENAS_OPENAI` e `OK_CACHE_APENAS_OPENAI`.

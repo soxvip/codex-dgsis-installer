@@ -54,6 +54,7 @@ Se precisar reinstalar ou trocar token, rode o mesmo comando de instalacao e dei
 - Instalar extensao VS Code `openai.chatgpt`.
 - Salvar token em variavel de usuario `DGSIS_API_KEY`.
 - Criar `%USERPROFILE%\.codex\model-catalogs\dgsis.json` com modelos OpenAI retornados por `/models`.
+- Atualizar `%USERPROFILE%\.codex\models_cache.json` para o seletor do Codex Desktop.
 - Excluir modelos Claude, Gemini, DeepSeek, Qwen, Llama, Mistral e similares do catalogo local.
 - Atualizar `%USERPROFILE%\.codex\config.toml` com provider `dgsis` e modelo `cx/gpt-5.5`.
 - Habilitar plugins bundled OpenAI: Browser, Chrome e Computer Use.
@@ -190,6 +191,7 @@ Tambem confira o catalogo local:
 
 ```powershell
 Get-Content "$env:USERPROFILE\.codex\model-catalogs\dgsis.json" -Raw | Select-String -Pattern 'cx/gpt|claude|gemini|qwen|llama'
+Get-Content "$env:USERPROFILE\.codex\models_cache.json" -Raw | Select-String -Pattern 'cx/gpt|claude|gemini|qwen|llama'
 ```
 
 Esperado: deve aparecer `cx/gpt...`; nao deve aparecer `claude`, `gemini`, `qwen` ou `llama`.

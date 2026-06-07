@@ -36,6 +36,7 @@ O instalador pode demorar porque baixa dependencias e instala o Codex CLI.
 - Codex Desktop oficial
 - Configuracao DGSIS em `%USERPROFILE%\.codex\config.toml`
 - Catalogo de modelos OpenAI DGSIS em `%USERPROFILE%\.codex\model-catalogs\dgsis.json`
+- Cache do seletor do Codex Desktop em `%USERPROFILE%\.codex\models_cache.json`
 - Plugins OpenAI Browser, Chrome e Computer Use habilitados
 
 ## Resultado esperado

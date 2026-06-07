@@ -33,6 +33,7 @@ Quando pedir, cole o token DGSIS do cliente. Se o Mac pedir senha, e a senha loc
 - Salva o token em `DGSIS_API_KEY` no ambiente do usuario.
 - Configura `~\.codex\config.toml` para usar o provider `dgsis` e o modelo `cx/gpt-5.5`.
 - Cria o catalogo local `~\.codex\model-catalogs\dgsis.json` com modelos OpenAI disponiveis em `/models`.
+- Atualiza `~\.codex\models_cache.json` para o seletor do Codex Desktop mostrar os modelos `cx/gpt-*`.
 - Filtra modelos externos como Claude, Gemini, DeepSeek, Qwen, Llama, Mistral e similares.
 - Habilita plugins bundled OpenAI: Browser, Chrome e Computer Use.
 - Corrige o bug do `pwsh.exe` da Microsoft Store que pode quebrar o sandbox no Windows.
@@ -49,6 +50,7 @@ Quando pedir, cole o token DGSIS do cliente. Se o Mac pedir senha, e a senha loc
 - Cria `~/.codex/dgsis-token.sh` e configura `auth.command`, evitando depender de variavel de ambiente do Terminal para o VS Code.
 - Configura `~/.codex/config.toml` para usar provider `dgsis` e modelo `cx/gpt-5.5`.
 - Cria o catalogo local `~/.codex/model-catalogs/dgsis.json` com modelos OpenAI disponiveis em `/models`.
+- Atualiza `~/.codex/models_cache.json` para o seletor do Codex Desktop mostrar os modelos `cx/gpt-*`.
 - Filtra modelos externos como Claude, Gemini, DeepSeek, Qwen, Llama, Mistral e similares.
 - Habilita plugins bundled OpenAI: Browser, Chrome e Computer Use.
 - Executa validacoes: catalogo, `codex --strict-config`, `codex doctor`, resposta do Codex e shell tool real.

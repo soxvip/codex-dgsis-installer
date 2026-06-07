@@ -76,6 +76,7 @@ CODEX_HOME_DIR="${CODEX_HOME:-$HOME/.codex}"
 CATALOG_DIR="$CODEX_HOME_DIR/model-catalogs"
 BACKUP_DIR="$CODEX_HOME_DIR/backups"
 CATALOG_PATH="$CATALOG_DIR/dgsis.json"
+MODELS_CACHE_PATH="$CODEX_HOME_DIR/models_cache.json"
 CONFIG_PATH="$CODEX_HOME_DIR/config.toml"
 ENV_FILE="$CODEX_HOME_DIR/dgsis.env"
 TOKEN_HELPER_PATH="$CODEX_HOME_DIR/dgsis-token.sh"
@@ -102,6 +103,7 @@ refresh_paths() {
   CATALOG_DIR="$CODEX_HOME_DIR/model-catalogs"
   BACKUP_DIR="$CODEX_HOME_DIR/backups"
   CATALOG_PATH="$CATALOG_DIR/dgsis.json"
+  MODELS_CACHE_PATH="$CODEX_HOME_DIR/models_cache.json"
   CONFIG_PATH="$CODEX_HOME_DIR/config.toml"
   ENV_FILE="$CODEX_HOME_DIR/dgsis.env"
   TOKEN_HELPER_PATH="$CODEX_HOME_DIR/dgsis-token.sh"
@@ -436,6 +438,66 @@ PY
   fi
 
   grep -Eq '"slug"[[:space:]]*:[[:space:]]*"cx/gpt-5\.5"' "$CATALOG_PATH" || return 1
+}
+
+write_models_cache() {
+  mkdir -p "$CODEX_HOME_DIR" "$BACKUP_DIR"
+
+  if [ -f "$MODELS_CACHE_PATH" ]; then
+    cp "$MODELS_CACHE_PATH" "$BACKUP_DIR/models_cache.$(date +%Y%m%d-%H%M%S).json"
+  fi
+
+  local codex_cmd client_version version_output
+  codex_cmd="$(find_codex_command || true)"
+  client_version="unknown"
+  if [ -n "$codex_cmd" ]; then
+    version_output="$($codex_cmd --version 2>/dev/null || true)"
+    version_output="${version_output%%$'\n'*}"
+    client_version="${version_output#codex-cli }"
+    [ -n "$client_version" ] || client_version="unknown"
+  fi
+
+  if command -v python3 >/dev/null 2>&1 && python3 --version >/dev/null 2>&1; then
+    python3 - "$CATALOG_PATH" "$MODELS_CACHE_PATH" "$client_version" <<'PY'
+import datetime
+import json
+import sys
+
+catalog_path, cache_path, client_version = sys.argv[1], sys.argv[2], sys.argv[3]
+with open(catalog_path, "r", encoding="utf-8-sig") as fh:
+    catalog = json.load(fh)
+
+cache = {
+    "fetched_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+    "etag": "dgsis-local-openai-only",
+    "client_version": client_version,
+    "models": catalog.get("models", []),
+}
+
+with open(cache_path, "w", encoding="utf-8") as fh:
+    json.dump(cache, fh, ensure_ascii=False, indent=2)
+    fh.write("\n")
+PY
+    return
+  fi
+
+  if command -v node >/dev/null 2>&1 && node --version >/dev/null 2>&1; then
+    node - "$CATALOG_PATH" "$MODELS_CACHE_PATH" "$client_version" <<'JS'
+const fs = require('fs');
+const [catalogPath, cachePath, clientVersion] = process.argv.slice(2);
+const catalog = JSON.parse(fs.readFileSync(catalogPath, 'utf8').replace(/^\uFEFF/, ''));
+const cache = {
+  fetched_at: new Date().toISOString(),
+  etag: 'dgsis-local-openai-only',
+  client_version: clientVersion,
+  models: catalog.models || [],
+};
+fs.writeFileSync(cachePath, JSON.stringify(cache, null, 2) + '\n', 'utf8');
+JS
+    return
+  fi
+
+  fail "python3 ou node nao encontrado para atualizar cache de modelos do Codex Desktop."
 }
 
 remove_section_from_file() {
@@ -858,6 +920,10 @@ EOF
 
   write_fallback_catalog
   validate_catalog_file
+  write_models_cache
+  [ -f "$MODELS_CACHE_PATH" ] || fail "Autoteste falhou: models_cache.json nao criado."
+  grep -Eq '"etag"[[:space:]]*:[[:space:]]*"dgsis-local-openai-only"' "$MODELS_CACHE_PATH" || fail "Autoteste falhou: models_cache sem etag DGSIS."
+  grep -Eq '"slug"[[:space:]]*:[[:space:]]*"cx/gpt-5\.5"' "$MODELS_CACHE_PATH" || fail "Autoteste falhou: models_cache sem modelo DGSIS."
   persist_token "self-test-token"
   persist_token "self-test-token"
   merge_config_file
@@ -960,6 +1026,8 @@ install_vscode_extension
 step "Gerando catalogo local DGSIS para o seletor de modelos"
 generate_catalog
 ok "Catalogo criado em $CATALOG_PATH"
+write_models_cache
+ok "Cache de modelos do Desktop atualizado em $MODELS_CACHE_PATH"
 
 step "Mesclando configuracao do Codex"
 merge_config_file

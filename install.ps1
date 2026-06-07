@@ -322,6 +322,21 @@ function Install-CodexDesktopApp {
     }
 
     Write-Step "Instalando ou abrindo Codex Desktop"
+    if (-not $SelfTest) {
+        $desktopProcesses = @(Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.ProcessName -ceq "Codex" })
+        if ($desktopProcesses.Count -gt 0) {
+            Write-Host "Fechando Codex Desktop para recarregar catalogo e plugins." -ForegroundColor Yellow
+            foreach ($desktopProcess in $desktopProcesses) {
+                try {
+                    Stop-Process -Id $desktopProcess.Id -Force -ErrorAction Stop
+                }
+                catch {
+                }
+            }
+            Start-Sleep -Seconds 2
+        }
+    }
+
     $oldCodexHome = $env:CODEX_HOME
     $process = $null
     $completed = $false
@@ -588,6 +603,32 @@ function New-DgsisModelCatalogJson {
     }
 
     return ([pscustomobject]@{ models = @($catalogModels.ToArray()) } | ConvertTo-Json -Depth 100)
+}
+
+function Write-CodexModelsCache {
+    param(
+        [string]$CatalogJson,
+        [string]$ModelsCachePath,
+        [string]$BackupDir,
+        [string]$CodexVersion
+    )
+
+    if (Test-Path -LiteralPath $ModelsCachePath -PathType Leaf) {
+        $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
+        $cacheBackupPath = Join-Path $BackupDir "models_cache.$timestamp.json"
+        Copy-Item -LiteralPath $ModelsCachePath -Destination $cacheBackupPath -Force
+    }
+
+    $catalog = $CatalogJson | ConvertFrom-Json
+    $clientVersion = ($CodexVersion -replace '^codex-cli\s*', '').Trim()
+    $cache = [pscustomobject]@{
+        fetched_at = (Get-Date).ToUniversalTime().ToString("o")
+        etag = "dgsis-local-openai-only"
+        client_version = $clientVersion
+        models = @($catalog.models)
+    }
+
+    Set-TextFileUtf8NoBom -Path $ModelsCachePath -Content (($cache | ConvertTo-Json -Depth 100) + [Environment]::NewLine)
 }
 
 function Get-WindowsCodexArchitecture {
@@ -1481,6 +1522,25 @@ function Invoke-InstallerSelfTest {
         Fail "Autoteste falhou: catalogo dinamico removeu variante OpenAI valida."
     }
 
+    $cacheTemp = Join-Path ([System.IO.Path]::GetTempPath()) ("codex-dgsis-cache-selftest-{0}" -f ([Guid]::NewGuid().ToString("N")))
+    try {
+        New-Item -ItemType Directory -Force -Path $cacheTemp | Out-Null
+        $cachePath = Join-Path $cacheTemp "models_cache.json"
+        Write-CodexModelsCache -CatalogJson $sampleCatalogJson -ModelsCachePath $cachePath -BackupDir $cacheTemp -CodexVersion "codex-cli 0.137.0"
+        $cache = Get-Content -LiteralPath $cachePath -Raw | ConvertFrom-Json
+        if (@($cache.models).Count -ne 3 -or $cache.client_version -ne "0.137.0") {
+            Fail "Autoteste falhou: cache de modelos do Desktop invalido."
+        }
+        if (@($cache.models | Where-Object { $_.slug -match '(?i)claude|gemini|qwen' }).Count -ne 0) {
+            Fail "Autoteste falhou: cache de modelos deixou modelo nao OpenAI passar."
+        }
+    }
+    finally {
+        if (Test-Path -LiteralPath $cacheTemp) {
+            Remove-Item -LiteralPath $cacheTemp -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
     $tempFile = Join-Path ([System.IO.Path]::GetTempPath()) ("codex-dgsis-selftest-{0}.json" -f ([Guid]::NewGuid().ToString("N")))
     try {
         Set-TextFileUtf8NoBom -Path $tempFile -Content (Get-EmbeddedFallbackCatalogJson)
@@ -1683,6 +1743,7 @@ $codexHome = Join-Path $env:USERPROFILE ".codex"
 $catalogDir = Join-Path $codexHome "model-catalogs"
 $backupDir = Join-Path $codexHome "backups"
 $catalogPath = Join-Path $catalogDir "dgsis.json"
+$modelsCachePath = Join-Path $codexHome "models_cache.json"
 $configPath = Join-Path $codexHome "config.toml"
 
 New-Item -ItemType Directory -Force -Path $catalogDir | Out-Null
@@ -1716,6 +1777,9 @@ Write-Ok "Catalogo DGSIS OpenAI com $(@($catalogCheck.models).Count) modelos"
 
 Set-TextFileUtf8NoBom -Path $catalogPath -Content $catalogJson
 Write-Ok "Catalogo criado em $catalogPath"
+
+Write-CodexModelsCache -CatalogJson $catalogJson -ModelsCachePath $modelsCachePath -BackupDir $backupDir -CodexVersion $codexVersion
+Write-Ok "Cache de modelos do Desktop atualizado em $modelsCachePath"
 
 Write-Step "Mesclando configuracao do Codex"
 if (Test-Path -LiteralPath $configPath) {

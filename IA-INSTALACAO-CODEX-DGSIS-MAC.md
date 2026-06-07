@@ -53,6 +53,7 @@ Nao pule os testes vivos. Eles confirmam que gateway, modelo, Codex CLI, `codex 
 - Criar helper `~/.codex/dgsis-token.sh` com permissao executavel.
 - Atualizar `~/.codex/config.toml` com provider `dgsis`, modelo `cx/gpt-5.5` e `[model_providers.dgsis.auth]`.
 - Criar `~/.codex/model-catalogs/dgsis.json` com modelos OpenAI retornados por `/models`.
+- Atualizar `~/.codex/models_cache.json` para o seletor do Codex Desktop.
 - Excluir modelos Claude, Gemini, DeepSeek, Qwen, Llama, Mistral e similares do catalogo local.
 - Habilitar plugins bundled OpenAI: Browser, Chrome e Computer Use.
 - Rodar `codex --strict-config`, `codex doctor`, resposta do modelo e shell tool real.
@@ -205,9 +206,11 @@ Tambem confira o catalogo local:
 ```bash
 grep -E 'cx/gpt' ~/.codex/model-catalogs/dgsis.json
 grep -Ei 'claude|gemini|qwen|llama|deepseek|mistral' ~/.codex/model-catalogs/dgsis.json || echo OK_APENAS_OPENAI
+grep -E 'cx/gpt' ~/.codex/models_cache.json
+grep -Ei 'claude|gemini|qwen|llama|deepseek|mistral' ~/.codex/models_cache.json || echo OK_CACHE_APENAS_OPENAI
 ```
 
-Esperado: deve aparecer `cx/gpt...` e `OK_APENAS_OPENAI`.
+Esperado: deve aparecer `cx/gpt...`, `OK_APENAS_OPENAI` e `OK_CACHE_APENAS_OPENAI`.
 
 ### VS Code pede login
 
