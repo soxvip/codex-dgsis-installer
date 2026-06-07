@@ -52,7 +52,9 @@ Nao pule os testes vivos. Eles confirmam que gateway, modelo, Codex CLI, `codex 
 - Salvar token em `~/.codex/dgsis.env` com permissao `600`.
 - Criar helper `~/.codex/dgsis-token.sh` com permissao executavel.
 - Atualizar `~/.codex/config.toml` com provider `dgsis`, modelo `cx/gpt-5.5` e `[model_providers.dgsis.auth]`.
-- Criar `~/.codex/model-catalogs/dgsis.json`.
+- Criar `~/.codex/model-catalogs/dgsis.json` com modelos OpenAI retornados por `/models`.
+- Excluir modelos Claude, Gemini, DeepSeek, Qwen, Llama, Mistral e similares do catalogo local.
+- Habilitar plugins bundled OpenAI: Browser, Chrome e Computer Use.
 - Rodar `codex --strict-config`, `codex doctor`, resposta do modelo e shell tool real.
 
 ## Validacao obrigatoria apos instalacao
@@ -66,6 +68,9 @@ command -v codex
 grep -n 'model = "cx/gpt-5.5"' ~/.codex/config.toml
 grep -n 'model_provider = "dgsis"' ~/.codex/config.toml
 grep -nF '[model_providers.dgsis.auth]' ~/.codex/config.toml
+grep -nF '[plugins."browser@openai-bundled"]' ~/.codex/config.toml
+grep -nF '[plugins."chrome@openai-bundled"]' ~/.codex/config.toml
+grep -nF '[plugins."computer-use@openai-bundled"]' ~/.codex/config.toml
 ls -l ~/.codex/dgsis.env ~/.codex/dgsis-token.sh
 ~/.codex/dgsis-token.sh >/dev/null && echo TOKEN_HELPER_OK
 ```
@@ -76,6 +81,7 @@ Criterios:
 - `codex doctor --json` nao mostra warning/fail.
 - `command -v codex` aponta para `~/.local/bin/codex` ou caminho equivalente do instalador oficial.
 - `config.toml` mostra modelo `cx/gpt-5.5`, provider `dgsis` e auth command.
+- `config.toml` mostra plugins Browser, Chrome e Computer Use habilitados.
 - `dgsis.env` esta com permissao `600`.
 - `dgsis-token.sh` esta executavel.
 - `TOKEN_HELPER_OK` aparece sem imprimir token.
@@ -194,6 +200,15 @@ curl -fsSL https://raw.githubusercontent.com/soxvip/codex-dgsis-installer/main/i
 
 Confirme com suporte DGSIS que token tem acesso a `cx/gpt-5.5`.
 
+Tambem confira o catalogo local:
+
+```bash
+grep -E 'cx/gpt' ~/.codex/model-catalogs/dgsis.json
+grep -Ei 'claude|gemini|qwen|llama|deepseek|mistral' ~/.codex/model-catalogs/dgsis.json || echo OK_APENAS_OPENAI
+```
+
+Esperado: deve aparecer `cx/gpt...` e `OK_APENAS_OPENAI`.
+
 ### VS Code pede login
 
 Nao faca login. Verifique CLI e helper:
@@ -214,6 +229,8 @@ Ao terminar, reporte somente:
 - VS Code extension instalada.
 - `codex doctor` sem problemas.
 - Modelo ativo `cx/gpt-5.5`.
+- Catalogo de modelos contem apenas modelos OpenAI DGSIS.
+- Plugins OpenAI Browser/Chrome/Computer Use habilitados.
 - Shell tool testado sem erro.
 
 Nao inclua token.

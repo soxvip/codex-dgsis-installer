@@ -32,7 +32,9 @@ Quando pedir, cole o token DGSIS do cliente. Se o Mac pedir senha, e a senha loc
 - Instala a extensao VS Code `openai.chatgpt`.
 - Salva o token em `DGSIS_API_KEY` no ambiente do usuario.
 - Configura `~\.codex\config.toml` para usar o provider `dgsis` e o modelo `cx/gpt-5.5`.
-- Cria o catalogo local `~\.codex\model-catalogs\dgsis.json`.
+- Cria o catalogo local `~\.codex\model-catalogs\dgsis.json` com modelos OpenAI disponiveis em `/models`.
+- Filtra modelos externos como Claude, Gemini, DeepSeek, Qwen, Llama, Mistral e similares.
+- Habilita plugins bundled OpenAI: Browser, Chrome e Computer Use.
 - Corrige o bug do `pwsh.exe` da Microsoft Store que pode quebrar o sandbox no Windows.
 - Ajusta profiles PowerShell para novas sessoes priorizarem `Codex\bin`.
 - Executa validacoes: `codex --strict-config`, catalogo, `codex doctor`, resposta do Codex e shell tool real.
@@ -46,7 +48,9 @@ Quando pedir, cole o token DGSIS do cliente. Se o Mac pedir senha, e a senha loc
 - Salva o token em `~/.codex/dgsis.env` com permissao `600`.
 - Cria `~/.codex/dgsis-token.sh` e configura `auth.command`, evitando depender de variavel de ambiente do Terminal para o VS Code.
 - Configura `~/.codex/config.toml` para usar provider `dgsis` e modelo `cx/gpt-5.5`.
-- Cria o catalogo local `~/.codex/model-catalogs/dgsis.json`.
+- Cria o catalogo local `~/.codex/model-catalogs/dgsis.json` com modelos OpenAI disponiveis em `/models`.
+- Filtra modelos externos como Claude, Gemini, DeepSeek, Qwen, Llama, Mistral e similares.
+- Habilita plugins bundled OpenAI: Browser, Chrome e Computer Use.
 - Executa validacoes: catalogo, `codex --strict-config`, `codex doctor`, resposta do Codex e shell tool real.
 
 ## Arquivos principais
@@ -59,7 +63,7 @@ Quando pedir, cole o token DGSIS do cliente. Se o Mac pedir senha, e a senha loc
 - `IA-INSTALACAO-CODEX-DGSIS-MAC.md`: roteiro para IA instalar no macOS.
 - `IA-VSCODE-CODEX.md`: roteiro VS Code para Windows.
 - `IA-VSCODE-CODEX-MAC.md`: roteiro VS Code para macOS.
-- `dgsis-model-catalog.json`: catalogo fallback do modelo `cx/gpt-5.5`.
+- `dgsis-model-catalog.json`: template fallback para gerar catalogo DGSIS quando o catalogo embutido do Codex nao estiver disponivel.
 
 ## Parametros uteis Windows
 
@@ -103,3 +107,5 @@ Instalacao concluida.
 ```
 
 Depois, feche e abra Terminal/PowerShell, VS Code e Codex Desktop. No VS Code, abra a barra lateral Codex/ChatGPT e envie uma mensagem. Deve funcionar sem login no site, usando o token DGSIS salvo localmente.
+
+O seletor de modelos deve mostrar apenas modelos OpenAI do gateway DGSIS, como `cx/gpt-5.5`, `cx/gpt-5.4`, `cx/gpt-5.4-mini` e variantes `cx/gpt-5.3-codex`. Modelos Claude/Gemini/etc nao devem aparecer no catalogo local.

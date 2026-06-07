@@ -499,6 +499,9 @@ merge_config_file() {
   remove_section_from_file "model_providers.dgsis.auth" "$body" "$tmp"
   remove_section_from_file "model_providers.dgsis" "$body" "$tmp"
   remove_section_from_file "plugins.\"cloudflare@openai-curated\"" "$body" "$tmp"
+  remove_section_from_file "plugins.\"browser@openai-bundled\"" "$body" "$tmp"
+  remove_section_from_file "plugins.\"chrome@openai-bundled\"" "$body" "$tmp"
+  remove_section_from_file "plugins.\"computer-use@openai-bundled\"" "$body" "$tmp"
 
   {
     printf 'model = "cx/gpt-5.5"\n'
@@ -520,6 +523,12 @@ merge_config_file() {
     printf 'refresh_interval_ms = 0\n'
     printf '\n[plugins."cloudflare@openai-curated"]\n'
     printf 'enabled = false\n'
+    printf '\n[plugins."browser@openai-bundled"]\n'
+    printf 'enabled = true\n'
+    printf '\n[plugins."chrome@openai-bundled"]\n'
+    printf 'enabled = true\n'
+    printf '\n[plugins."computer-use@openai-bundled"]\n'
+    printf 'enabled = true\n'
   } >"$CONFIG_PATH"
 
   rm -f "$body" "$tmp"
@@ -624,35 +633,108 @@ install_codex_cli() {
 
 generate_catalog() {
   mkdir -p "$CATALOG_DIR"
-  local codex_cmd
+  local codex_cmd models_source
   codex_cmd="$(find_codex_command || true)"
-  if command -v python3 >/dev/null 2>&1 && python3 --version >/dev/null 2>&1 && [ -n "$codex_cmd" ] && "$codex_cmd" debug models --bundled >"$CATALOG_PATH.source" 2>/dev/null; then
-    if python3 - "$CATALOG_PATH.source" "$CATALOG_PATH" "$DGSIS_MODEL" <<'PY'
+  models_source="$CATALOG_PATH.models"
+  rm -f "$models_source"
+
+  if [ "$SKIP_LIVE_TESTS" != "1" ] && [ -n "${DGSIS_API_KEY:-}" ]; then
+    curl -fsSL -H "Authorization: Bearer $DGSIS_API_KEY" "$DGSIS_BASE_URL/models" -o "$models_source" 2>/dev/null || rm -f "$models_source"
+  fi
+
+  if command -v python3 >/dev/null 2>&1 && python3 --version >/dev/null 2>&1 && [ -n "$codex_cmd" ] && [ -f "$models_source" ] && "$codex_cmd" debug models --bundled >"$CATALOG_PATH.source" 2>/dev/null; then
+    if python3 - "$CATALOG_PATH.source" "$models_source" "$CATALOG_PATH" "$DGSIS_MODEL" <<'PY'
 import json
+import re
 import sys
-src, dst, model_slug = sys.argv[1], sys.argv[2], sys.argv[3]
+src, models_src, dst, default_model = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+
+blocked = re.compile(r"claude|anthropic|gemini|deepseek|qwen|llama|mistral|kimi|glm|minimax|grok|oss", re.I)
+
+def is_openai_model(model_id):
+    return bool(re.match(r"^cx/(gpt-|o[0-9]|codex-|chatgpt-)", model_id or "")) and not blocked.search(model_id or "")
+
+def candidates(model_id):
+    slug = re.sub(r"^cx/", "", model_id)
+    out = [slug]
+    no_review = re.sub(r"-review$", "", slug)
+    if no_review != slug:
+        out.append(no_review)
+    base = re.sub(r"-(none|low|medium|high|xhigh|spark)$", "", no_review)
+    if base != no_review:
+        out.append(base)
+    for prefix, template in [
+        ("gpt-5.3-codex", "gpt-5.3-codex"),
+        ("gpt-5.4-mini", "gpt-5.4-mini"),
+        ("gpt-5.4", "gpt-5.4"),
+        ("gpt-5.5", "gpt-5.5"),
+    ]:
+        if slug.startswith(prefix):
+            out.append(template)
+    seen = set()
+    return [item for item in out if item and not (item in seen or seen.add(item))]
+
+def display_name(model_id):
+    slug = re.sub(r"^cx/", "", model_id)
+    parts = []
+    for part in slug.split("-"):
+        if not part:
+            continue
+        if part == "gpt" or part == "codex" or re.match(r"^o[0-9]", part):
+            parts.append(part.upper())
+        else:
+            parts.append(part[:1].upper() + part[1:])
+    return "DGSIS " + " ".join(parts)
+
 with open(src, "r", encoding="utf-8-sig") as fh:
-    data = json.load(fh)
-matches = [m for m in data.get("models", []) if m.get("slug") == "gpt-5.5"]
-if not matches:
+    bundled = json.load(fh)
+with open(models_src, "r", encoding="utf-8-sig") as fh:
+    api_models = json.load(fh)
+
+model_ids = sorted({item.get("id", "") for item in api_models.get("data", []) if is_openai_model(item.get("id", ""))})
+if default_model not in model_ids:
     raise SystemExit(1)
-model = matches[0]
-model["slug"] = model_slug
-model["display_name"] = "DGSIS GPT-5.5"
-model["description"] = "Modelo GPT-5.5 via gateway DGSIS."
-model["availability_nux"] = None
+
+templates = {m.get("slug"): m for m in bundled.get("models", []) if m.get("slug")}
+default_template = templates.get("gpt-5.5") or next(iter(templates.values()), None)
+if default_template is None:
+    raise SystemExit(1)
+
+models = []
+for index, model_id in enumerate(model_ids):
+    template = None
+    for candidate in candidates(model_id):
+        if candidate in templates:
+            template = templates[candidate]
+            break
+    if template is None:
+        template = default_template
+    model = json.loads(json.dumps(template))
+    model["slug"] = model_id
+    model["display_name"] = display_name(model_id)
+    model["description"] = f"Modelo OpenAI {model_id} via gateway DGSIS."
+    model["visibility"] = "list"
+    model["supported_in_api"] = True
+    model["priority"] = 0 if model_id == default_model else index + 10
+    if "availability_nux" in model:
+        model["availability_nux"] = None
+    models.append(model)
+
 with open(dst, "w", encoding="utf-8") as fh:
-    json.dump({"models": [model]}, fh, ensure_ascii=False, indent=2)
+    json.dump({"models": models}, fh, ensure_ascii=False, indent=2)
     fh.write("\n")
 PY
     then
-      rm -f "$CATALOG_PATH.source"
+      rm -f "$CATALOG_PATH.source" "$models_source"
       validate_catalog_file || fail "Catalogo DGSIS gerado localmente e invalido."
+      if grep -Eiq 'claude|anthropic|gemini|deepseek|qwen|llama|mistral|kimi|glm|minimax|grok|oss' "$CATALOG_PATH"; then
+        fail "Catalogo DGSIS invalido: contem modelos que nao sao OpenAI."
+      fi
       return
     fi
   fi
 
-  rm -f "$CATALOG_PATH.source"
+  rm -f "$CATALOG_PATH.source" "$models_source"
   warn "usando catalogo fallback DGSIS."
   write_fallback_catalog
   validate_catalog_file || fail "Catalogo fallback DGSIS invalido."
@@ -769,6 +851,9 @@ command = "/tmp/old"
 
 [plugins."cloudflare@openai-curated"]
 enabled = true
+
+[plugins."browser@openai-bundled"]
+enabled = false
 EOF
 
   write_fallback_catalog
@@ -783,6 +868,9 @@ EOF
   [ "$(grep -Ec '^\[model_providers\.dgsis\]$' "$CONFIG_PATH")" = "1" ] || fail "Autoteste falhou: provider duplicado ou ausente."
   [ "$(grep -Ec '^\[model_providers\.dgsis\.auth\]$' "$CONFIG_PATH")" = "1" ] || fail "Autoteste falhou: auth duplicado ou ausente."
   [ "$(grep -Ec '^\[plugins\."cloudflare@openai-curated"\]$' "$CONFIG_PATH")" = "1" ] || fail "Autoteste falhou: cloudflare duplicado ou ausente."
+  [ "$(grep -Ec '^\[plugins\."browser@openai-bundled"\]$' "$CONFIG_PATH")" = "1" ] || fail "Autoteste falhou: browser plugin duplicado ou ausente."
+  [ "$(grep -Ec '^\[plugins\."chrome@openai-bundled"\]$' "$CONFIG_PATH")" = "1" ] || fail "Autoteste falhou: chrome plugin duplicado ou ausente."
+  [ "$(grep -Ec '^\[plugins\."computer-use@openai-bundled"\]$' "$CONFIG_PATH")" = "1" ] || fail "Autoteste falhou: computer-use plugin duplicado ou ausente."
   ! grep -Eq '^env_key[[:space:]]*=' "$CONFIG_PATH" || fail "Autoteste falhou: env_key permaneceu no provider DGSIS."
   [ -f "$ENV_FILE" ] || fail "Autoteste falhou: dgsis.env nao criado."
   [ -x "$TOKEN_HELPER_PATH" ] || fail "Autoteste falhou: helper de token nao executavel."

@@ -35,6 +35,8 @@ O instalador pode demorar porque baixa dependencias e instala o Codex CLI.
 - Codex CLI oficial
 - Codex Desktop oficial
 - Configuracao DGSIS em `%USERPROFILE%\.codex\config.toml`
+- Catalogo de modelos OpenAI DGSIS em `%USERPROFILE%\.codex\model-catalogs\dgsis.json`
+- Plugins OpenAI Browser, Chrome e Computer Use habilitados
 
 ## Resultado esperado
 
@@ -106,6 +108,10 @@ Resposta esperada:
 CODEX_DESKTOP_READY
 ```
 
+No seletor de modelos, devem aparecer apenas modelos OpenAI do gateway DGSIS, por exemplo `cx/gpt-5.5`, `cx/gpt-5.4`, `cx/gpt-5.4-mini` e variantes `cx/gpt-5.3-codex`. Nao devem aparecer modelos Claude, Gemini, DeepSeek, Qwen, Llama ou similares.
+
+Na area de plugins/ferramentas, os plugins bundled OpenAI esperados sao Browser, Chrome e Computer Use.
+
 Se pedir login OpenAI, feche o Codex Desktop, abra uma nova janela PowerShell e rode o comando `codex app "$env:USERPROFILE"` novamente.
 
 ## Reinstalar ou trocar token
@@ -145,4 +151,3 @@ codex doctor --json
 ```
 
 Envie a saida completa ao suporte.
-

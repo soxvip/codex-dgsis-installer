@@ -53,8 +53,10 @@ Se precisar reinstalar ou trocar token, rode o mesmo comando de instalacao e dei
 - Instalar ou abrir Codex Desktop via `codex app`.
 - Instalar extensao VS Code `openai.chatgpt`.
 - Salvar token em variavel de usuario `DGSIS_API_KEY`.
-- Criar `%USERPROFILE%\.codex\model-catalogs\dgsis.json`.
+- Criar `%USERPROFILE%\.codex\model-catalogs\dgsis.json` com modelos OpenAI retornados por `/models`.
+- Excluir modelos Claude, Gemini, DeepSeek, Qwen, Llama, Mistral e similares do catalogo local.
 - Atualizar `%USERPROFILE%\.codex\config.toml` com provider `dgsis` e modelo `cx/gpt-5.5`.
+- Habilitar plugins bundled OpenAI: Browser, Chrome e Computer Use.
 - Configurar `[windows] sandbox = "elevated"`.
 - Configurar `[shell_environment_policy]` com PATH estavel.
 - Criar shim `pwsh.exe` em `%LOCALAPPDATA%\Programs\OpenAI\Codex\bin`.
@@ -126,6 +128,9 @@ No Codex Desktop:
 2. Abra workspace do usuario.
 3. Envie `Responda exatamente CODEX_DESKTOP_READY e nada mais.`
 4. Confirme resposta `CODEX_DESKTOP_READY`.
+5. Confirme que seletor de modelos mostra apenas modelos OpenAI do gateway DGSIS, como `cx/gpt-5.5`, `cx/gpt-5.4`, `cx/gpt-5.4-mini` e variantes `cx/gpt-5.3-codex`.
+6. Confirme que modelos Claude/Gemini/etc nao aparecem no catalogo local.
+7. Confirme plugins/ferramentas Browser, Chrome e Computer Use quando interface mostrar plugins disponiveis.
 
 Se pedir login OpenAI, feche o app e abra pelo PowerShell com `codex app "$env:USERPROFILE"` para herdar o ambiente configurado.
 
@@ -181,15 +186,25 @@ irm https://raw.githubusercontent.com/soxvip/codex-dgsis-installer/main/install.
 
 Confirme com suporte DGSIS que token tem acesso a `cx/gpt-5.5`.
 
+Tambem confira o catalogo local:
+
+```powershell
+Get-Content "$env:USERPROFILE\.codex\model-catalogs\dgsis.json" -Raw | Select-String -Pattern 'cx/gpt|claude|gemini|qwen|llama'
+```
+
+Esperado: deve aparecer `cx/gpt...`; nao deve aparecer `claude`, `gemini`, `qwen` ou `llama`.
+
 ## Resposta final ao cliente
 
 Ao terminar, reporte somente:
 
 - Codex CLI instalado.
 - Codex Desktop acionado.
+- Plugins OpenAI Browser/Chrome/Computer Use habilitados.
 - VS Code extension instalada.
 - `codex doctor` sem problemas.
 - Modelo ativo `cx/gpt-5.5`.
+- Catalogo de modelos contem apenas modelos OpenAI DGSIS.
 - Shell tool testado sem erro de sandbox.
 
 Nao inclua token.

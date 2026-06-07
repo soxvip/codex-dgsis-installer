@@ -36,6 +36,8 @@ O instalador pode demorar porque baixa Homebrew, Git, Node.js, Python, VS Code e
 - Extensao VS Code `openai.chatgpt`.
 - Codex CLI oficial.
 - Configuracao DGSIS em `~/.codex/config.toml`.
+- Catalogo de modelos OpenAI DGSIS em `~/.codex/model-catalogs/dgsis.json`.
+- Plugins OpenAI Browser, Chrome e Computer Use habilitados.
 - Token em `~/.codex/dgsis.env` com permissao `600`.
 - Helper seguro `~/.codex/dgsis-token.sh` para o VS Code ler o token sem depender do Terminal.
 
@@ -79,6 +81,8 @@ Resposta esperada:
 ```text
 ok
 ```
+
+O seletor de modelos deve mostrar apenas modelos OpenAI do gateway DGSIS, como `cx/gpt-5.5`, `cx/gpt-5.4`, `cx/gpt-5.4-mini` e variantes `cx/gpt-5.3-codex`. Nao devem aparecer modelos Claude, Gemini, DeepSeek, Qwen, Llama ou similares.
 
 ## Testar no VS Code
 
@@ -189,3 +193,11 @@ codex debug models | grep 'cx/gpt-5.5'
 ```
 
 Se nao aparecer, rode o instalador novamente. Se continuar, confirme com suporte DGSIS que o token tem acesso ao modelo `cx/gpt-5.5`.
+
+Para confirmar que nao entrou modelo externo:
+
+```bash
+grep -Ei 'claude|gemini|qwen|llama|deepseek|mistral' ~/.codex/model-catalogs/dgsis.json || echo OK_APENAS_OPENAI
+```
+
+Esperado: `OK_APENAS_OPENAI`.

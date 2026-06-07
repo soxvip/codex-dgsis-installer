@@ -437,6 +437,159 @@ function Get-FallbackCatalogJson {
     return Get-EmbeddedFallbackCatalogJson
 }
 
+function Test-DgsisOpenAIModelId {
+    param([string]$ModelId)
+
+    if ([string]::IsNullOrWhiteSpace($ModelId)) {
+        return $false
+    }
+
+    if ($ModelId -notmatch '^cx\/(gpt-|o[0-9]|codex-|chatgpt-)') {
+        return $false
+    }
+
+    return $ModelId -notmatch '(?i)claude|anthropic|gemini|deepseek|qwen|llama|mistral|kimi|glm|minimax|grok|oss'
+}
+
+function Get-DgsisOpenAIModelIds {
+    param([object]$ModelsResponse)
+
+    $ids = New-Object System.Collections.Generic.List[string]
+    foreach ($item in @($ModelsResponse.data)) {
+        $id = [string]$item.id
+        if (Test-DgsisOpenAIModelId -ModelId $id) {
+            [void]$ids.Add($id)
+        }
+    }
+
+    return @($ids.ToArray() | Sort-Object -Unique)
+}
+
+function Get-DgsisTemplateSlugCandidates {
+    param([string]$ModelId)
+
+    $slug = $ModelId -replace '^cx/', ''
+    $candidates = New-Object System.Collections.Generic.List[string]
+    [void]$candidates.Add($slug)
+
+    $withoutReview = $slug -replace '-review$', ''
+    if ($withoutReview -ne $slug) {
+        [void]$candidates.Add($withoutReview)
+    }
+
+    $base = $withoutReview -replace '-(none|low|medium|high|xhigh|spark)$', ''
+    if ($base -ne $withoutReview) {
+        [void]$candidates.Add($base)
+    }
+
+    if ($slug -match '^gpt-5\.3-codex') {
+        [void]$candidates.Add('gpt-5.3-codex')
+    }
+    if ($slug -match '^gpt-5\.4-mini') {
+        [void]$candidates.Add('gpt-5.4-mini')
+    }
+    if ($slug -match '^gpt-5\.4') {
+        [void]$candidates.Add('gpt-5.4')
+    }
+    if ($slug -match '^gpt-5\.5') {
+        [void]$candidates.Add('gpt-5.5')
+    }
+
+    return @($candidates.ToArray() | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique)
+}
+
+function Get-DgsisModelDisplayName {
+    param([string]$ModelId)
+
+    $name = $ModelId -replace '^cx/', ''
+    $parts = @($name -split '-' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    $displayParts = foreach ($part in $parts) {
+        if ($part -match '^(gpt|codex|o[0-9].*)$') {
+            $part.ToUpperInvariant()
+        }
+        else {
+            $part.Substring(0, 1).ToUpperInvariant() + $part.Substring(1)
+        }
+    }
+
+    return "DGSIS " + ($displayParts -join ' ')
+}
+
+function Copy-ModelTemplate {
+    param([object]$Template)
+
+    return ($Template | ConvertTo-Json -Depth 100 | ConvertFrom-Json)
+}
+
+function New-DgsisModelCatalogJson {
+    param(
+        [object]$ModelsResponse,
+        [object]$BundledCatalog,
+        [string]$DefaultModel
+    )
+
+    $openAiModelIds = @(Get-DgsisOpenAIModelIds -ModelsResponse $ModelsResponse)
+    if (@($openAiModelIds | Where-Object { $_ -eq $DefaultModel }).Count -ne 1) {
+        Fail "O token foi aceito, mas o modelo OpenAI padrao $DefaultModel nao apareceu em /models."
+    }
+
+    $templates = @{}
+    foreach ($model in @($BundledCatalog.models)) {
+        if (-not [string]::IsNullOrWhiteSpace([string]$model.slug)) {
+            $templates[[string]$model.slug] = $model
+        }
+    }
+
+    $fallbackCatalog = Get-FallbackCatalogJson | ConvertFrom-Json
+    foreach ($model in @($fallbackCatalog.models)) {
+        if (-not [string]::IsNullOrWhiteSpace([string]$model.slug)) {
+            $templates[[string]$model.slug] = $model
+            $templates[([string]$model.slug -replace '^cx/', '')] = $model
+        }
+    }
+
+    $defaultTemplate = $null
+    foreach ($candidate in @('gpt-5.5', $DefaultModel, 'cx/gpt-5.5')) {
+        if ($templates.ContainsKey($candidate)) {
+            $defaultTemplate = $templates[$candidate]
+            break
+        }
+    }
+    if ($null -eq $defaultTemplate) {
+        Fail "Nao encontrei template de modelo OpenAI para montar catalogo DGSIS."
+    }
+
+    $catalogModels = New-Object System.Collections.Generic.List[object]
+    $priority = 0
+    foreach ($modelId in $openAiModelIds) {
+        $template = $null
+        foreach ($candidate in @(Get-DgsisTemplateSlugCandidates -ModelId $modelId)) {
+            if ($templates.ContainsKey($candidate)) {
+                $template = $templates[$candidate]
+                break
+            }
+        }
+        if ($null -eq $template) {
+            $template = $defaultTemplate
+        }
+
+        $model = Copy-ModelTemplate -Template $template
+        $model.slug = $modelId
+        $model.display_name = Get-DgsisModelDisplayName -ModelId $modelId
+        $model.description = "Modelo OpenAI $modelId via gateway DGSIS."
+        $model.visibility = "list"
+        $model.supported_in_api = $true
+        $model.priority = if ($modelId -eq $DefaultModel) { 0 } else { $priority + 10 }
+        if ($model.PSObject.Properties.Name -contains "availability_nux") {
+            $model.availability_nux = $null
+        }
+        [void]$catalogModels.Add($model)
+        $priority += 1
+    }
+
+    return ([pscustomobject]@{ models = @($catalogModels.ToArray()) } | ConvertTo-Json -Depth 100)
+}
+
 function Get-WindowsCodexArchitecture {
     param([string]$Override = "")
 
@@ -781,7 +934,16 @@ function Install-PwshShim {
     $shimPath = Join-Path $PreferredBinDir "pwsh.exe"
     $tempDir = Join-Path ([System.IO.Path]::GetTempPath()) ("codex-pwsh-shim-{0}" -f ([Guid]::NewGuid().ToString("N")))
     $sourcePath = Join-Path $tempDir "PwshShim.cs"
+    $compiledShimPath = Join-Path $tempDir "pwsh.exe"
     $compiler = Get-CSharpCompilerPath
+
+    if (Test-Path -LiteralPath $shimPath -PathType Leaf) {
+        $existingOutput = & $shimPath -NoProfile -Command "Write-Output CODEX_PWSH_SHIM_OK" 2>&1
+        if ($LASTEXITCODE -eq 0 -and (($existingOutput | Out-String) -match "CODEX_PWSH_SHIM_OK")) {
+            Write-Ok "Shim pwsh.exe ja pronto em $shimPath"
+            return
+        }
+    }
 
     if ([string]::IsNullOrWhiteSpace($compiler)) {
         Write-Host "Aviso: csc.exe nao encontrado; nao foi possivel gerar shim pwsh.exe. Se o cliente usa PowerShell da Microsoft Store, instale .NET Framework Developer Pack ou remova o alias pwsh da Store." -ForegroundColor Yellow
@@ -791,10 +953,26 @@ function Install-PwshShim {
     try {
         New-Item -ItemType Directory -Force -Path $tempDir | Out-Null
         Set-TextFileUtf8NoBom -Path $sourcePath -Content (Get-PwshShimSource)
-        $compileOutput = & $compiler /nologo /target:exe /platform:anycpu /optimize+ /out:$shimPath $sourcePath 2>&1
+        $compileOutput = & $compiler /nologo /target:exe /platform:anycpu /optimize+ /out:$compiledShimPath $sourcePath 2>&1
         $exitCode = $LASTEXITCODE
-        if ($exitCode -ne 0 -or -not (Test-Path -LiteralPath $shimPath -PathType Leaf)) {
+        if ($exitCode -ne 0 -or -not (Test-Path -LiteralPath $compiledShimPath -PathType Leaf)) {
             Fail "Falha ao compilar shim pwsh.exe. Saida: $($compileOutput | Out-String)"
+        }
+
+        try {
+            Copy-Item -LiteralPath $compiledShimPath -Destination $shimPath -Force -ErrorAction Stop
+        }
+        catch {
+            if (Test-Path -LiteralPath $shimPath -PathType Leaf) {
+                $existingOutput = & $shimPath -NoProfile -Command "Write-Output CODEX_PWSH_SHIM_OK" 2>&1
+                if ($LASTEXITCODE -eq 0 -and (($existingOutput | Out-String) -match "CODEX_PWSH_SHIM_OK")) {
+                    Write-Host "Aviso: shim pwsh.exe esta em uso; mantendo shim existente valido." -ForegroundColor Yellow
+                    Write-Ok "Shim pwsh.exe pronto em $shimPath"
+                    return
+                }
+            }
+
+            Fail "Falha ao atualizar shim pwsh.exe em $shimPath. Feche Codex/terminais usando pwsh.exe e rode novamente. Erro: $($_.Exception.Message)"
         }
 
         $testOutput = & $shimPath -NoProfile -Command "Write-Output CODEX_PWSH_SHIM_OK" 2>&1
@@ -1087,12 +1265,40 @@ function Invoke-CodexShellToolTest {
 
     try {
         $prompt = "Use uma ferramenta de shell para executar um comando que imprime $tag. Depois responda exatamente $tag e nada mais."
-        & $CodexExe exec --ephemeral --skip-git-repo-check --json -o $lastPath $prompt *> $jsonlPath
-        $exitCode = $LASTEXITCODE
-        $lines = @()
-        if (Test-Path -LiteralPath $jsonlPath) {
-            $lines = @(Get-Content -LiteralPath $jsonlPath)
+        $args = @("exec", "--ephemeral", "--skip-git-repo-check", "--json", "-o", $lastPath, $prompt)
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = $CodexExe
+        $psi.Arguments = ($args | ForEach-Object { Quote-ProcessArgument $_ }) -join " "
+        $psi.UseShellExecute = $false
+        $psi.RedirectStandardInput = $true
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError = $true
+        $psi.CreateNoWindow = $true
+        $psi.EnvironmentVariables[$EnvKeyName] = $env:DGSIS_API_KEY
+
+        $process = New-Object System.Diagnostics.Process
+        $process.StartInfo = $psi
+
+        [void]$process.Start()
+        $process.StandardInput.Close()
+        $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+        $stderrTask = $process.StandardError.ReadToEndAsync()
+
+        if (-not $process.WaitForExit(180000)) {
+            try {
+                $process.Kill()
+            }
+            catch {
+            }
+            Fail "Teste shell tool excedeu 180 segundos."
         }
+
+        $stdout = $stdoutTask.Result
+        $stderr = $stderrTask.Result
+        Set-TextFileUtf8NoBom -Path $jsonlPath -Content $stdout
+        $exitCode = $process.ExitCode
+        $lines = @($stdout -split "`r?`n" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+        $diagnosticLines = @($lines + @($stderr -split "`r?`n" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }))
 
         $final = ""
         if (Test-Path -LiteralPath $lastPath) {
@@ -1103,7 +1309,7 @@ function Invoke-CodexShellToolTest {
         $failed = $false
         $lastCommand = ""
 
-        foreach ($line in $lines) {
+        foreach ($line in $diagnosticLines) {
             $lineText = [string]$line
             if ($lineText -match 'CreateProcessAsUserW failed|windows sandbox: runner error') {
                 $failed = $true
@@ -1128,7 +1334,7 @@ function Invoke-CodexShellToolTest {
         }
 
         if ($exitCode -ne 0 -or $final -ne $tag -or -not $commandOk -or $failed) {
-            $sample = ($lines | Where-Object { $_ -match 'command_execution|CreateProcess|windows sandbox|pwsh|powershell|cmd.exe|CODEX_DGSIS_SHELL_TOOL_OK' } | Select-Object -First 20) -join "`n"
+            $sample = ($diagnosticLines | Where-Object { $_ -match 'command_execution|CreateProcess|windows sandbox|pwsh|powershell|cmd.exe|CODEX_DGSIS_SHELL_TOOL_OK|Reading additional input' } | Select-Object -First 20) -join "`n"
             Fail "Teste shell tool falhou. exit=$exitCode final='$final' commandOk=$commandOk failed=$failed command='$lastCommand' amostra=$sample"
         }
 
@@ -1217,18 +1423,22 @@ function Invoke-InstallerSelfTest {
         'name = "old"',
         '',
         '[plugins."cloudflare@openai-curated"]',
-        'enabled = true'
+        'enabled = true',
+        '',
+        '[plugins."browser@openai-bundled"]',
+        'enabled = false'
     )
 
     $sampleLines = Set-TopLevelKey $sampleLines "model" 'model = "cx/gpt-5.5"'
     $sampleLines = Set-TopLevelKey $sampleLines "model_provider" 'model_provider = "dgsis"'
     $sampleLines = Remove-Section $sampleLines "model_providers.dgsis"
     $sampleLines = Remove-Section $sampleLines 'plugins."cloudflare@openai-curated"'
+    $sampleLines = Remove-Section $sampleLines 'plugins."browser@openai-bundled"'
     $sampleLines = Set-SectionKey $sampleLines "windows" "sandbox" 'sandbox = "elevated"'
-    $sampleLines = @($sampleLines + "" + "[model_providers.dgsis]" + 'name = "DGSIS Gateway"' + "" + '[plugins."cloudflare@openai-curated"]' + 'enabled = false')
+    $sampleLines = @($sampleLines + "" + "[model_providers.dgsis]" + 'name = "DGSIS Gateway"' + "" + '[plugins."cloudflare@openai-curated"]' + 'enabled = false' + "" + '[plugins."browser@openai-bundled"]' + 'enabled = true')
     $sampleText = $sampleLines -join "`n"
 
-    foreach ($pattern in @('(?m)^model = "cx/gpt-5\.5"$', '(?m)^model_provider = "dgsis"$', '(?m)^\[model_providers\.dgsis\]$', '(?m)^\[plugins\."cloudflare@openai-curated"\]$')) {
+    foreach ($pattern in @('(?m)^model = "cx/gpt-5\.5"$', '(?m)^model_provider = "dgsis"$', '(?m)^\[model_providers\.dgsis\]$', '(?m)^\[plugins\."cloudflare@openai-curated"\]$', '(?m)^\[plugins\."browser@openai-bundled"\]$')) {
         if (@([regex]::Matches($sampleText, $pattern)).Count -ne 1) {
             Fail "Autoteste falhou: padrao duplicado ou ausente: $pattern"
         }
@@ -1247,6 +1457,28 @@ function Invoke-InstallerSelfTest {
     $catalog = Get-EmbeddedFallbackCatalogJson | ConvertFrom-Json
     if (@($catalog.models | Where-Object { $_.slug -eq "cx/gpt-5.5" }).Count -ne 1) {
         Fail "Autoteste falhou: catalogo fallback invalido."
+    }
+
+    $sampleModelsResponse = [pscustomobject]@{
+        data = @(
+            [pscustomobject]@{ id = "cx/gpt-5.5" },
+            [pscustomobject]@{ id = "cx/gpt-5.4-mini" },
+            [pscustomobject]@{ id = "cx/gpt-5.3-codex-high-review" },
+            [pscustomobject]@{ id = "kr/claude-opus-4.8" },
+            [pscustomobject]@{ id = "ag/gemini-3.1-pro-low" },
+            [pscustomobject]@{ id = "cf/@cf/qwen/qwen2.5-coder-32b-instruct" }
+        )
+    }
+    $sampleCatalogJson = New-DgsisModelCatalogJson -ModelsResponse $sampleModelsResponse -BundledCatalog $catalog -DefaultModel "cx/gpt-5.5"
+    $sampleCatalog = $sampleCatalogJson | ConvertFrom-Json
+    if (@($sampleCatalog.models).Count -ne 3) {
+        Fail "Autoteste falhou: catalogo dinamico nao filtrou modelos OpenAI corretamente."
+    }
+    if (@($sampleCatalog.models | Where-Object { $_.slug -match '(?i)claude|gemini|qwen' }).Count -ne 0) {
+        Fail "Autoteste falhou: catalogo dinamico deixou modelo nao OpenAI passar."
+    }
+    if (@($sampleCatalog.models | Where-Object { $_.slug -eq "cx/gpt-5.3-codex-high-review" }).Count -ne 1) {
+        Fail "Autoteste falhou: catalogo dinamico removeu variante OpenAI valida."
     }
 
     $tempFile = Join-Path ([System.IO.Path]::GetTempPath()) ("codex-dgsis-selftest-{0}.json" -f ([Guid]::NewGuid().ToString("N")))
@@ -1461,23 +1693,12 @@ $catalogJson = $null
 try {
     $bundledJson = & $preferredCodexExe debug models --bundled
     $bundledCatalog = $bundledJson | ConvertFrom-Json
-    $model = @($bundledCatalog.models | Where-Object { $_.slug -eq "gpt-5.5" })[0]
-
-    if ($null -eq $model) {
-        throw "O catalogo embutido do Codex nao contem gpt-5.5."
-    }
-
-    $model.slug = $DgsisModel
-    $model.display_name = "DGSIS GPT-5.5"
-    $model.description = "Modelo GPT-5.5 via gateway DGSIS."
-    $model.availability_nux = $null
-
-    $catalog = [pscustomobject]@{ models = @($model) }
-    $catalogJson = $catalog | ConvertTo-Json -Depth 100
+    $catalogJson = New-DgsisModelCatalogJson -ModelsResponse $models -BundledCatalog $bundledCatalog -DefaultModel $DgsisModel
 }
 catch {
-    Write-Host "Aviso: nao foi possivel transformar o catalogo embutido; usando fallback DGSIS." -ForegroundColor Yellow
-    $catalogJson = Get-FallbackCatalogJson
+    Write-Host "Aviso: nao foi possivel transformar o catalogo embutido; usando fallback DGSIS. $($_.Exception.Message)" -ForegroundColor Yellow
+    $fallbackCatalog = Get-FallbackCatalogJson | ConvertFrom-Json
+    $catalogJson = New-DgsisModelCatalogJson -ModelsResponse $models -BundledCatalog $fallbackCatalog -DefaultModel $DgsisModel
 }
 
 if ([string]::IsNullOrWhiteSpace($catalogJson)) {
@@ -1488,6 +1709,10 @@ $catalogCheck = $catalogJson | ConvertFrom-Json
 if (@($catalogCheck.models | Where-Object { $_.slug -eq $DgsisModel }).Count -ne 1) {
     Fail "Catalogo DGSIS invalido: modelo $DgsisModel ausente."
 }
+if (@($catalogCheck.models | Where-Object { $_.slug -match '(?i)claude|anthropic|gemini|deepseek|qwen|llama|mistral|kimi|glm|minimax|grok|oss' }).Count -ne 0) {
+    Fail "Catalogo DGSIS invalido: contem modelos que nao sao OpenAI."
+}
+Write-Ok "Catalogo DGSIS OpenAI com $(@($catalogCheck.models).Count) modelos"
 
 Set-TextFileUtf8NoBom -Path $catalogPath -Content $catalogJson
 Write-Ok "Catalogo criado em $catalogPath"
@@ -1516,6 +1741,9 @@ $lines = Set-TopLevelKey $lines "model" 'model = "cx/gpt-5.5"'
 
 $lines = Remove-Section $lines "model_providers.dgsis"
 $lines = Remove-Section $lines 'plugins."cloudflare@openai-curated"'
+$lines = Remove-Section $lines 'plugins."browser@openai-bundled"'
+$lines = Remove-Section $lines 'plugins."chrome@openai-bundled"'
+$lines = Remove-Section $lines 'plugins."computer-use@openai-bundled"'
 $lines = Remove-Section $lines "shell_environment_policy"
 $lines = Set-SectionKey $lines "windows" "sandbox" 'sandbox = "elevated"'
 
@@ -1533,7 +1761,16 @@ $lines = @($lines + "" + "[shell_environment_policy]" +
     'env_key = "DGSIS_API_KEY"' +
     "" +
     '[plugins."cloudflare@openai-curated"]' +
-    'enabled = false')
+    'enabled = false' +
+    "" +
+    '[plugins."browser@openai-bundled"]' +
+    'enabled = true' +
+    "" +
+    '[plugins."chrome@openai-bundled"]' +
+    'enabled = true' +
+    "" +
+    '[plugins."computer-use@openai-bundled"]' +
+    'enabled = true')
 
 Set-LinesFileUtf8NoBom -Path $configPath -Lines $lines
 Write-Ok "Config.toml atualizado em $configPath"
